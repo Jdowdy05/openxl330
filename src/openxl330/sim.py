@@ -36,7 +36,9 @@ Motion: a first-order position model. While ARMed the position follows the refer
     configured, OFF or ARMed; INT32_MIN to 260, 264 or 268 leaves torque or duty mode (the shaft's position becomes the
     target); duty and torque exclude each other; a target (256) answers 7 in torque mode; OFF, a fault and an expired
     'hold' lease leave it (an expired 'hold' lease also refuses 264/268 with 7). While ARMed in torque mode the shaft
-    turns at torque / 0.0214 N*m*s/rad (compensated; raw: less 4 mN*m of friction), at most the no-load speed. Read 640
+    turns at torque / 0.0214 N*m*s/rad (compensated; raw: less 4 mN*m of friction), at most the no-load speed. This is a
+    crude viscous model: on hardware a light joint in compensated torque mode is almost frictionless and accelerates far
+    faster (a gripper reached 5-6 rad/s within 0.15 s at 0.02 N*m), so do not size real pulses from it. Read 640
     reports the mode (word 13 bits 2-3, bit 1 duty), the request after the configured limit (word 4: the torque command,
     or the PD output kp*error + kd*(v_ref - v) while ARMed in position mode) and the controller flags (word 9: 2 saturated, 8
     limited). Unlike the firmware, the simulator leaves the gear-train compensation's share out of word 4 and of the

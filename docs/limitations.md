@@ -32,6 +32,6 @@ openxl330 is a Python library and a command-line tool. A graphical setup tool is
 
 - **Model:** only the XL330-M288 is supported.
 - **Qualified so far:** macOS with BusLinker and U2D2 adapters. Linux and Windows are expected to work but are not yet hardware-tested.
-- **Not yet done:** a first install from stock with this package, a loaded six-servo run, and a physical check of the 65 °C shutoff. See the README for the current status.
+- **Not yet done:** a physical check of the 65 °C shutoff. See the README for the current status.
 - **Experimental:** `flash-all` and the route back to stock firmware. See [experimental commands](experimental.md) and [returning to stock firmware](returning-to-stock.md).
 - **Torque estimates:** these are model-based estimates, not measurements. See the [torque guide](torque.md) for their accuracy.

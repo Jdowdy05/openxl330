@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.1.0 (unreleased, beta)
+## 0.1.0 (2026-11-23, beta)
 
-The first public release is a beta: see the README for what has been qualified on hardware so far.
+The first public release is a beta. Before release, a six-servo arm was installed from stock with `experimental flash-all`, the torque command was checked, and a 600 s loaded run passed. The README lists what has been qualified on hardware.
 
 - Python API and CLI for XL330-M288 servos running FW231, with multi-servo motion, telemetry and diagnostics.
 - First installation, update and recovery with one bundled firmware image, `fw231-comp2-fast16` (register map ABI 4). It is fast14 plus a direct torque command, and a diagnostic: `last_reset()` reports `iwdg_update_timeout` when the watchdog's settings fail to apply at start-up. As in fast14, the temperature lookup table is generated from a thermistor model and matches the values in fast13. First-time installations preserve the stock nonvolatile ID. Installed servos start at 1 Mbaud.

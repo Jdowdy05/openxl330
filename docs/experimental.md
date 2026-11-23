@@ -1,6 +1,6 @@
 # Experimental: flash-all and uninstall
 
-> **Experimental.** The steps behind these commands were tested on one bench with two XL330-M288 servos (macOS, BusLinker and U2D2 adapters, November 2026), using prototype scripts. The `openxl330 experimental` commands themselves have so far been tested only against the simulated bus. Read the limits below before using them, and please share receipts and reports.
+> **Experimental.** `openxl330 experimental flash-all` has installed a six-servo arm from stock: V52 at 2 Mbaud, on a U2D2, with every bystander check unchanged. The steps behind uninstall were tested on one bench with two XL330-M288 servos, using prototype scripts. The uninstall commands themselves have so far been tested only against the simulated bus (macOS, November 2026). Read the limits below before using them, and please share receipts and reports.
 
 Two commands are covered here:
 
@@ -49,8 +49,7 @@ What the bench showed:
 
 Not covered yet:
 
-- more than two servos;
-- stock servos at bauds other than 57600;
+- stock servos other than V53 at 57600 staying on the bus as bystanders;
 - writing back stock settings a user had changed (on the bench they were factory defaults, so only the ID was written);
 - Dynamixel Wizard on Windows or Linux.
 

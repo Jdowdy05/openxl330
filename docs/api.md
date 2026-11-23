@@ -107,6 +107,8 @@ It takes effect at the next 2 kHz control tick, so within 0.5 ms.
 
 The commanded torque is a request passed through the actuator model, not a measurement at the horn. The model's friction, back-EMF and inertia constants were fitted on a bench servo, so expect differences on yours (see [torque estimates](torque.md)).
 
+**A light joint in compensated torque mode is almost frictionless.** The compensation adds friction torque in the direction of motion (about 4 mN·m plus 0.31 × the command), and cancels part of the rotor's inertia. So even a small torque keeps accelerating a light joint, and an opposing command smaller than that friction share barely brakes it. On the first hardware run, an XL330 gripper reached 5–6 rad/s within 0.15 s at 0.02 N·m. With 0.01 N·m, a following −0.01 N·m pulse did not stop it before it had travelled 30°. Start with short pulses. To stop a joint, use `release_torque()` (position hold); use `compensate=False` when you want friction to damp the motion.
+
 The default limit of 2 N·m is far above what the motor can deliver at full duty: a few tenths of a N·m at 5 V. In practice, duty saturation bounds the torque, so a request beyond the stall torque delivers about the stall torque. `control_mode()` reports `saturated` when a request needs more than full duty, and `limited` when the configured limit clipped it. No other cut-off is added; set a lower limit with `configure()` if you want one.
 
 ```python

@@ -27,7 +27,7 @@ Installing openxl330 replaces the stock firmware of an **XL330-M288**. This inst
 
 ## Several servos at once, and going back to stock (experimental)
 
-`openxl330 experimental flash-all` installs on every stock servo of a bus in one run, each keeping its ID. `openxl330 experimental uninstall` and `uninstall-restore` put a servo back on stock firmware through Dynamixel Wizard's Firmware Recovery. Both are experimental, with evidence from a two-servo bench only: see [experimental commands](experimental.md) and [returning to stock firmware](returning-to-stock.md).
+`openxl330 experimental flash-all` installs on every stock servo of a bus in one run, each keeping its ID. `openxl330 experimental uninstall` and `uninstall-restore` put a servo back on stock firmware through Dynamixel Wizard's Firmware Recovery. Both are experimental. flash-all has installed a six-servo arm from stock; the route back to stock has been tested on a two-servo bench only: see [experimental commands](experimental.md) and [returning to stock firmware](returning-to-stock.md).
 
 ## Update an installed servo
 
