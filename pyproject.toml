@@ -1,0 +1,79 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openxl330"
+dynamic = ["version"]
+description = "Python library and installer for custom XL330 servo firmware"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = ["pyserial>=3.5"]
+keywords = ["dynamixel", "xl330", "servo", "robotics", "firmware", "robot-arm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering",
+    "Topic :: System :: Hardware :: Hardware Drivers",
+]
+
+[project.urls]
+Homepage = "https://github.com/Jdowdy05/openxl330"
+Source = "https://github.com/Jdowdy05/openxl330"
+Issues = "https://github.com/Jdowdy05/openxl330/issues"
+Documentation = "https://github.com/Jdowdy05/openxl330/tree/main/docs"
+Changelog = "https://github.com/Jdowdy05/openxl330/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "build", "hatchling>=1.27"]
+
+[project.scripts]
+openxl330 = "openxl330.cli:main"
+
+[tool.hatch.version]
+path = "src/openxl330/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+sources = ["src"]
+include = [
+    "/src/openxl330/**/*.py",
+    "/src/openxl330/images/*/firmware.bin",
+    "/src/openxl330/images/*/firmware.enc",
+    "/src/openxl330/images/*/manifest.json",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/.github/workflows/ci.yml",
+    "/assets/banner.png",
+    "/CHANGELOG.md",
+    "/CONTRIBUTING.md",
+    "/SECURITY.md",
+    "/THIRD_PARTY_NOTICES.md",
+    "/docs/*.md",
+    "/docs/*.py",
+    "/examples/*.py",
+    "/LICENSE",
+    "/README.md",
+    "/pyproject.toml",
+    "/src/openxl330/**/*.py",
+    "/src/openxl330/images/*/firmware.bin",
+    "/src/openxl330/images/*/firmware.enc",
+    "/src/openxl330/images/*/manifest.json",
+    "/tests/*.py",
+    "/tests/golden/protocol_vectors.json",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

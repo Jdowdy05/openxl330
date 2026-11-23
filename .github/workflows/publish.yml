@@ -1,0 +1,60 @@
+name: Publish to PyPI
+
+# Runs when a GitHub release is published. Uses PyPI trusted publishing (OIDC): no API token is stored anywhere.
+# One-time setup on pypi.org: add a pending trusted publisher for project "openxl330" with this repository,
+# workflow file "publish.yml" and environment "pypi".
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Install build tools
+        run: python -m pip install build twine "hatchling>=1.27"
+      - name: Build source distribution and wheel
+        run: python -m build --no-isolation
+      - name: Check distributions
+        run: python -m twine check --strict dist/*
+      - name: Scan the sources and distributions for codec material (needs the maintainers' digest secret)
+        shell: bash
+        env:
+          CODEC_DIGESTS: ${{ secrets.OPENXL330_CODEC_DIGESTS }}
+          OPENXL330_REQUIRE_CODEC_DIGESTS: "1"
+        run: |
+          printf '%s\n' "$CODEC_DIGESTS" > "$RUNNER_TEMP/codec-digests.txt"
+          python -m pip install -e ".[dev]"
+          OPENXL330_CODEC_DIGESTS="$RUNNER_TEMP/codec-digests.txt" python -m pytest -q tests/test_protocol.py tests/test_images.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Upload to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/openxl330/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

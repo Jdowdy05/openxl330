@@ -1,0 +1,62 @@
+name: Bug report
+description: Something in openxl330 (library, CLI, installer or firmware) does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Do not paste personal data. Receipts and wire logs hold servo IDs, settings and raw bus traffic, so read them before attaching. Never attach `nvm.bin`. For security problems, use SECURITY.md instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what happened instead. Include the full error message.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: openxl330 version
+      description: Output of `openxl330 version`.
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware release on the servo(s)
+      description: From `openxl330 status --port PORT --ids ...`, or the stock version (for example V52) if the servo was still on stock firmware.
+    validations:
+      required: true
+  - type: dropdown
+    id: adapter
+    attributes:
+      label: Adapter
+      options:
+        - U2D2
+        - BusLinker-type adapter
+        - Other (say which below)
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and Python version
+      placeholder: macOS 15.1, Python 3.12
+    validations:
+      required: true
+  - type: textarea
+    id: bus
+    attributes:
+      label: Bus setup
+      description: How many servos, their IDs and baud, the power supply, and anything else on the bus.
+  - type: textarea
+    id: selftest
+    attributes:
+      label: Self-test output
+      description: For example `python -m openxl330.selftest --sim 3 --ids 1,2,3 --out selftest-report`, or your bench run. Paste the summary or attach the report.
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Receipts (reviewed first), logs or screenshots.

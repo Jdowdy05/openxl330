@@ -1,0 +1,55 @@
+name: Hardware report
+description: Tell us how openxl330 behaved on your hardware, whether it worked or not.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Reports from new adapters, operating systems and stock firmware versions are how support grows. Read receipts before attaching them, and never attach `nvm.bin`.
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - Worked
+        - Worked with problems
+        - Did not work
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: openxl330 version and firmware release
+      placeholder: openxl330 0.1.0, fw231-comp2-fast15
+    validations:
+      required: true
+  - type: input
+    id: stock
+    attributes:
+      label: Stock firmware before the install
+      description: The version Dynamixel Wizard showed (for example V52), and the servo model.
+  - type: input
+    id: adapter
+    attributes:
+      label: Adapter
+      placeholder: U2D2, BusLinker, ...
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and Python version
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What you did and what you saw
+      description: Commands, number of servos, baud, load, and any errors or warnings.
+    validations:
+      required: true
+  - type: textarea
+    id: selftest
+    attributes:
+      label: Self-test output
+      description: The summary of `python -m openxl330.selftest`, if you ran it.
+      render: text
