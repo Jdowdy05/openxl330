@@ -1,9 +1,9 @@
-![openxl330 — open firmware for XL330 servos](assets/banner.png)
+![openxl330 — open firmware for XL330 servos](https://raw.githubusercontent.com/Jdowdy05/openxl330/main/assets/banner.png)
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/features/features-card-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="assets/features/features-card-light.png">
-  <img src="assets/features/features-card-light.png" width="800"
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Jdowdy05/openxl330/main/assets/features/features-card-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Jdowdy05/openxl330/main/assets/features/features-card-light.png">
+  <img src="https://raw.githubusercontent.com/Jdowdy05/openxl330/main/assets/features/features-card-light.png" width="800"
        alt="What makes openxl330 different. 2 kHz torque PD: torque-based position control running at 2 kHz on the servo. Torque in real units: torque commands and feedback in N·m; Kp in N·m/rad, Kd in N·m·s/rad (see footnote). Gear-train compensation: compensation for gear-train friction, back-EMF and rotor inertia. Protections you set: adjustable voltage, temperature and I²t limits; no travel or speed cut-offs. Lower lag: 53 ms best-fit lag vs 76–102 ms for stock in a like-for-like chirp test. Fast group bus: Fast Sync Read and grouped Sync Write at 1, 2 or 3 Mbaud.">
 </picture>
 
@@ -70,9 +70,9 @@ We compared the stock firmware with openxl330 on the same XL330 driving a small 
 
 The host streamed one chirp trajectory, `sin(t²)` rad for 6 s, at about 62 goals per second to both firmwares, with identical goal values and timing.
 
-![Chirp trace: reference vs stock vs openxl330](assets/perf/chirp-trace.png)
+![Chirp trace: reference vs stock vs openxl330](https://raw.githubusercontent.com/Jdowdy05/openxl330/main/assets/perf/chirp-trace.png)
 
-![RMS error, shape error after lag, and lag](assets/perf/chirp-bars.png)
+![RMS error, shape error after lag, and lag](https://raw.githubusercontent.com/Jdowdy05/openxl330/main/assets/perf/chirp-bars.png)
 
 "Shape error after lag" is the RMS error left after shifting each response by its own best-fit delay. It measures how well the motion keeps the trajectory's shape, separately from how late it arrives.
 
@@ -80,7 +80,7 @@ The host streamed one chirp trajectory, `sin(t²)` rad for 6 s, at about 62 goal
 
 A single 20° step under gravity load illustrates the difference. Across all twelve ±10/20/45° steps and their returns, the 10–90% rise time was 60–104 ms for openxl330 and 105–136 ms for the stock firmware.
 
-![20 degree step response](assets/perf/step-20deg.png)
+![20 degree step response](https://raw.githubusercontent.com/Jdowdy05/openxl330/main/assets/perf/step-20deg.png)
 
 ### Summary
 
