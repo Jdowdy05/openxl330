@@ -526,19 +526,21 @@ class Servo:
                           f'at the next enable(); call enable() first')
         self._wire.write(self.id, DUTY, struct.pack('<i', pwm))
 
-    def set_torque(self, nm, compensate=True):
+    def set_torque(self, nm, compensate=True, verify=True):
         """Command torque directly instead of a position (release 16+). nm: output torque at the horn in N*m, signed in
         the joint's calibrated direction. compensate=True (default) passes it through the gear-train compensation
         (friction, back-EMF, rotor inertia) like the PD's own output; compensate=False commands motor torque referred to
         the output with no compensation (duty = torque / (K x supply voltage)). It replaces the PD from the next control
         tick (<= 0.5 ms) until release_torque(), set_duty(), disable() or a fault. No limit is added: only the configured
         torque limit (configure()) and full duty bound it, and the voltage, temperature and current protections and an
-        opt-in lease apply as always. A move() is refused while it is active. Only while enabled (Refused otherwise: a
-        command written while OFF would wait and apply at the next enable()). The torque is set, not measured: see the
-        torque guide for what the model assumes."""
+        opt-in lease apply as always. A move() is refused while it is active. verify=True (default) first checks that the
+        servo is enabled (Refused otherwise: a command written while OFF would wait and apply at the next ARM);
+        verify=False sends the write alone, one bus transaction, for torque loops (a servo that is OFF keeps the command,
+        and enable() clears it before arming). The torque is set, not measured: see the torque guide for what the model
+        assumes."""
         nm = check_torque(nm)
         require_torque_command(self._bus, [self.id], {self.id: self._info})
-        if not decode_control_status(self._wire.read(self.id, *STATUS_CONTROL))['enabled']:
+        if verify and not decode_control_status(self._wire.read(self.id, *STATUS_CONTROL))['enabled']:
             raise Refused(f'torque not commanded: ID {self.id} is OFF, and a torque written while OFF would wait and '
                           f'apply at the next enable(); call enable() first')
         data = encode_torque(self._cal.sign(self.id) * nm)

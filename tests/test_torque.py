@@ -245,3 +245,30 @@ def test_position_mode_torque_is_never_negative_zero():
     bus, _ = armed([sim], calibration)
     mode = bus.servo(1).control_mode()
     assert mode["mode"] == "position" and math.copysign(1.0, mode["torque"]) == 1.0
+
+
+def test_verify_false_sends_one_transaction_for_torque_loops():
+    sims = servos(2)
+    bus, group = armed(sims)
+    servo = bus.servo(1)
+    before = len(bus.port.tx_log)
+    servo.set_torque(0.01, verify=False)
+    assert len(bus.port.tx_log) - before == 1 and sims[0].tau_mode == 1
+    before = len(bus.port.tx_log)
+    group.set_torque(0.02, verify=False)
+    assert len(bus.port.tx_log) - before == 1 and [s.tau_mode for s in sims] == [1, 1]
+    group.disable()
+    servo.set_torque(0.03, verify=False)                   # OFF: the firmware keeps it ...
+    assert sims[0].tau_mode == 1
+    group.enable()                                          # ... and enable() clears it before arming
+    assert [s.tau_mode for s in sims] == [0, 0]
+
+
+def test_position_mode_reports_the_pd_output_like_the_firmware():
+    (sim,) = servos(1)
+    bus, _ = armed([sim])
+    servo = bus.servo(1)
+    servo.move(servo.position + 0.5, duration=1.0, verify=False)
+    bus.wire.sleep(0.3)
+    mode = servo.control_mode()
+    assert mode["mode"] == "position" and mode["torque"] > 0      # the PD pushes toward the moving reference

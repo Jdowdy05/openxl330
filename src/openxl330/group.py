@@ -256,10 +256,12 @@ class Group:
     def set_torque(self, torques, compensate=True, verify=True, *, settle_s=SYNC_WRITE_SETTLE_S):
         """Command torque directly on members (release 16+; see Servo.set_torque), in one Sync Write: `torques` is
         {id: N*m} (members not named keep what they do) or one number for every member. compensate=True uses the
-        gear-train compensation (write 264), False commands raw motor torque (268). Every named member must be enabled
-        (Refused otherwise, before anything is sent). A Sync Write has no replies: verify=True (default) reads each
-        member's controller snapshot back and raises Rejected for any that is not in the requested torque mode (an
-        expired 'hold' lease refuses torque commands). settle_s sets the Sync Write delay for verify=False."""
+        gear-train compensation (write 264), False commands raw motor torque (268). A Sync Write has no replies.
+        verify=True (default) first checks that every named member is enabled (Refused otherwise, before anything is
+        sent), then reads each member's controller snapshot back and raises Rejected for any that is not in the requested
+        torque mode (an expired 'hold' lease refuses torque commands). verify=False sends the Sync Write alone, one bus
+        transaction, for torque loops (a member that is OFF keeps the command; enable() clears it before arming).
+        settle_s sets the Sync Write delay for verify=False."""
         if isinstance(torques, Mapping):
             ids = _members(self, torques, 'torques')
             values = {i: check_torque(torques[i], f'torque for ID {i}') for i in ids}
@@ -272,8 +274,8 @@ class Group:
             raise InvalidArgument('override the Sync Write settle delay only for verify=False')
         require_torque_command(self._bus, ids, self._infos)
         wire = self._ready_wire(ids)
-        st = group_rows(wire, ids, STATUS_CONTROL, lambda i, raw: decode_control_status(raw))
-        off = [i for i in ids if not st[i]['enabled']]
+        st = group_rows(wire, ids, STATUS_CONTROL, lambda i, raw: decode_control_status(raw)) if verify else {}
+        off = [i for i in ids if verify and not st[i]['enabled']]
         if off:
             raise Refused(f'torque not commanded: {ids_text(off)} {"is" if len(off) == 1 else "are"} OFF, and a torque '
                           f'written while OFF would wait and apply at the next enable(); call enable() first. Nothing '

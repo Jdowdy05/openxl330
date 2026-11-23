@@ -56,6 +56,7 @@ include = [
 [tool.hatch.build.targets.sdist]
 include = [
     "/.github/workflows/ci.yml",
+    "/.gitattributes",
     "/assets/banner.png",
     "/CHANGELOG.md",
     "/CONTRIBUTING.md",

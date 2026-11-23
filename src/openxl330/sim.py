@@ -37,7 +37,10 @@ Motion: a first-order position model. While ARMed the position follows the refer
     target); duty and torque exclude each other; a target (256) answers 7 in torque mode; OFF, a fault and an expired
     'hold' lease leave it (an expired 'hold' lease also refuses 264/268 with 7). While ARMed in torque mode the shaft
     turns at torque / 0.0214 N*m*s/rad (compensated; raw: less 4 mN*m of friction), at most the no-load speed. Read 640
-    reports the mode (word 13 bits 2-3, bit 1 duty) and the command (word 4).
+    reports the mode (word 13 bits 2-3, bit 1 duty), the request after the configured limit (word 4: the torque command,
+    or the PD output kp*error + kd*(v_ref - v) while ARMed in position mode) and the controller flags (word 9: 2 saturated, 8
+    limited). Unlike the firmware, the simulator leaves the gear-train compensation's share out of word 4 and of the
+    limited test (the firmware limits the request plus compensation).
 The motion block (1088) and the status block report the model. Tests may still set `enabled`, `motion_pwm`, `motion_v`
 and `motion_current` directly: the model only runs after an ARM write.
 """
@@ -492,8 +495,18 @@ class SimServo:
         if (a, n) == (640, 64):
             w = [0] * 16
             limit = struct.unpack_from('<I', self.config, 16)[0] if self.config else 2 << 24
-            w[4] = max(-limit, min(limit, self.tau_q24)) if self.tau_mode else 0       # after the configured limit
-            w[9] = (2 if getattr(self, 'saturated', False) else 0) | (8 if self.tau_mode and abs(self.tau_q24) > limit else 0)
+            if self.tau_mode:
+                request = self.tau_q24
+            elif self.enabled and self.profile is not None and self.gains:      # the PD output (no compensation share)
+                now = self.clock.t if self.clock else 0.0
+                error = (self._reference(now) - self.position) / COUNTS_PER_RAD
+                v_ref = (self._reference(now + 0.0005) - self._reference(now - 0.0005)) / 0.001 / COUNTS_PER_RAD
+                kp, kd = self.gains                                            # firmware: kp*e + kd*(v_ref - v_hat)
+                request = round((kp * error + kd * (v_ref - self.motion_v)) * 256)   # Q16 gains x rad -> Q24 N*m
+            else:
+                request = 0
+            w[4] = max(-limit, min(limit, request))                            # after the configured limit
+            w[9] = (2 if getattr(self, 'saturated', False) else 0) | (8 if abs(request) > limit else 0)
             w[5] = (self.motion_pwm & 0xFFFF) | (self.motion_pwm & 0xFFFF) << 16       # commanded | applied duty
             w[10], w[11] = self.target_counts & 0xFFFFFFFF, self.duration_ticks
             w[13] = (int(self._moving(self.clock.t if self.clock else 0.0)) | (self.duty is not None) << 1

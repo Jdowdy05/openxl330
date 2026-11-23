@@ -29,7 +29,7 @@ from pathlib import Path
 from ._protocol import framing, packets
 from .errors import Error, InvalidArgument
 from .registers import (DEVCFG_BYTES, DEVCFG_OFFSET, FW231_MARKER, RELEASE_VARIANTS,
-                        encode_release_id,  # noqa: F401 (re-exported)
+                        encode_release_id,
                         parse_devcfg)
 
 PROGRAM_BASE = 0x08004000
