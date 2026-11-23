@@ -9,9 +9,7 @@ openxl330 writes servo flash and drives motors, so we treat these as security is
 
 ## Reporting
 
-<!-- TODO(owner): add the project's security contact address here (a project address, not a personal one), and enable GitHub private vulnerability reporting under Settings > Security. Remove this comment before the repository goes public. -->
-
-Report a vulnerability privately through GitHub: on the repository page, open **Security → Report a vulnerability**. Please do not open a public issue for it. Include the openxl330 version, the firmware release, and what an attacker or a mistake could cause.
+Report a vulnerability privately through GitHub: on the repository page, open **Security → Report a vulnerability**. Please do not open a public issue for it. There is no security email address; for anything that is not a vulnerability, open an issue. Include the openxl330 version, the firmware release, and what an attacker or a mistake could cause.
 
 We will acknowledge reports and keep you informed. This is a small volunteer project, so there is no bug bounty.
 
