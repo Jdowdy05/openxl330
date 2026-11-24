@@ -1,4 +1,4 @@
-![openxl330 — open firmware for XL330 servos](https://raw.githubusercontent.com/Jdowdy05/openxl330/main/assets/banner.png)
+![openxl330 — open firmware for XL330 servos: 2 kHz torque PD, gains in N·m/rad, gear-train compensation, N·m torque feedback](https://raw.githubusercontent.com/Jdowdy05/openxl330/main/assets/banner.png)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Jdowdy05/openxl330/main/assets/features/features-card-dark.png">
