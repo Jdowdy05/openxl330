@@ -4,10 +4,13 @@
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Jdowdy05/openxl330/main/assets/features/features-card-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Jdowdy05/openxl330/main/assets/features/features-card-light.png">
   <img src="https://raw.githubusercontent.com/Jdowdy05/openxl330/main/assets/features/features-card-light.png" width="800"
-       alt="What makes openxl330 different. 2 kHz torque PD: torque-based position control running at 2 kHz on the servo. Torque in real units: torque commands and feedback in N·m; Kp in N·m/rad, Kd in N·m·s/rad (see footnote). Gear-train compensation: compensation for gear-train friction, back-EMF and rotor inertia. Protections you set: adjustable voltage, temperature and I²t limits; no travel or speed cut-offs. Lower lag: 53 ms best-fit lag vs 76–102 ms for stock in a like-for-like chirp test. Fast group bus: Fast Sync Read and grouped Sync Write at 1, 2 or 3 Mbaud.">
+       alt="What makes openxl330 different. 2 kHz torque PD: torque-based position control running at 2 kHz on the servo. Torque in real units: torque commands and feedback in N·m; Kp in N·m/rad, Kd in N·m·s/rad (see Notes at the end). Gear-train compensation: compensation for gear-train friction, back-EMF and rotor inertia. Protections you set: adjustable voltage, temperature and I²t limits; no travel or speed cut-offs. Lower lag: 53 ms best-fit lag vs 76–102 ms for stock in a like-for-like chirp test. Fast group bus: Fast Sync Read and grouped Sync Write at 1, 2 or 3 Mbaud.">
 </picture>
 
-<sub>* Stock firmware offers current-based control in mA; openxl330 states gains and torque in N·m using a fixed actuator model, so torque values are estimates (see <a href="https://github.com/Jdowdy05/openxl330/blob/main/docs/torque.md">torque estimates</a>). Torque commands (<code>set_torque()</code>, firmware release 16) are requested output torque through the same model, bounded by the motor's stall torque (full duty) and the configured limit; they are not measured at the horn. Of these cells, only the lag figure is a head-to-head measurement (one unit, one run, see <a href="#performance-vs-stock-firmware">Performance</a>); stock also supports high baud rates.</sub>
+<p align="center">
+<b>Latest additions (0.2.0)</b><br>
+XL330-M077 early beta · Two builds per servo: standard and logging (data collection) · Change IDs over the bus (<code>openxl330 set-id</code>) · Stock Dynamixel software compatibility (beta) · Firmware source published · New firmware not yet hardware-tested
+</p>
 
 # openxl330
 
@@ -158,3 +161,6 @@ To report a bug or a hardware result, or to contribute, see [CONTRIBUTING](https
 
 The library and the bundled openxl330 firmware are licensed under [MIT](https://github.com/Jdowdy05/openxl330/blob/main/LICENSE). The README images include third-party artwork; see [third-party notices](https://github.com/Jdowdy05/openxl330/blob/main/THIRD_PARTY_NOTICES.md). ROBOTIS and DYNAMIXEL are used to identify the hardware and tools this project interoperates with. See the [changelog](https://github.com/Jdowdy05/openxl330/blob/main/CHANGELOG.md) for release notes and the [torque guide](https://github.com/Jdowdy05/openxl330/blob/main/docs/torque.md) for what the estimates mean.
 
+## Notes
+
+\* Stock firmware offers current-based control in mA; openxl330 states gains and torque in N·m using a fixed actuator model, so torque values are estimates (see <a href="https://github.com/Jdowdy05/openxl330/blob/main/docs/torque.md">torque estimates</a>). Torque commands (<code>set_torque()</code>, firmware release 16) are requested output torque through the same model, bounded by the motor's stall torque (full duty) and the configured limit; they are not measured at the horn. Of these cells, only the lag figure is a head-to-head measurement (one unit, one run, see <a href="#performance-vs-stock-firmware">Performance</a>); stock also supports high baud rates.
