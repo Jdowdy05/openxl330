@@ -21,10 +21,11 @@ from openxl330 import (Bus, Calibration, Group, Servo, ServoInfo, State, Status,
 from openxl330.errors import (AdapterError, BusUncertain, CalibrationError, Faulted, InvalidArgument, NoReply, NoServosFound,
                               NotEnabled, NotSupported, PortBusy, Refused, Rejected, UnsupportedServo)
 from openxl330.sim import SimPort, SimServo, default_eeprom, parse_requests
+from openxl330.bus import MAX_ABI
 from openxl330.wire import Wire
 
 RELEASE = images.Release(images.DEFAULT_RELEASE)
-ALL_FEATURES = frozenset({"motion", "fast_sync_read", "last_reset", "release_id", "torque_command"})
+ALL_FEATURES = frozenset({"motion", "fast_sync_read", "last_reset", "release_id", "torque_command", "set_id"})
 
 
 @pytest.fixture(autouse=True)
@@ -112,7 +113,7 @@ def writes_to(port, address):
 
 # ---------------------------------------------------------------------------------------------- package surface
 def test_package_exports():
-    assert openxl330.__version__ == "0.1.0"
+    assert openxl330.__version__ == "0.2.0"
     for name in ("Bus", "Servo", "Group", "State", "Status", "ServoInfo", "Calibration", "Error", "InvalidArgument",
                  "Refused", "BusUncertain", "NoReply", "Rejected", "NotSupported", "NotEnabled", "Faulted",
                  "InstallError", "UntestedServo", "UnsupportedServo", "NoServosFound", "CalibrationError",
@@ -186,10 +187,11 @@ def test_stock_servo_refused_with_advice():
 
 
 def test_abi_outside_the_supported_range_is_refused_with_the_update_command():
-    bus = bus_on([with_abi(release_servos(1)[0], 1), with_abi(release_servos(1, first=2)[0], 5)])
+    newer = MAX_ABI + 1
+    bus = bus_on([with_abi(release_servos(1)[0], 1), with_abi(release_servos(1, first=2)[0], newer)])
     infos = {i.id: i for i in bus.scan()}
     assert not infos[1].supported and not infos[2].supported
-    for servo_id, words in ((1, "ABI 1"), (2, "ABI 5")):
+    for servo_id, words in ((1, "ABI 1"), (2, f"ABI {newer}")):
         with pytest.raises(UnsupportedServo) as e:
             bus.servo(servo_id)
         assert words in str(e.value) and f"openxl330 update --port SIM --id {servo_id}" in str(e.value)

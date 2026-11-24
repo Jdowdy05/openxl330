@@ -9,14 +9,16 @@ The helpers below are shared with Group (group.py).
 """
 from __future__ import annotations
 
+import json
 import math
 import numbers
 import struct
 from dataclasses import dataclass, field
 
-from .errors import BusUncertain, Faulted, InvalidArgument, NoReply, NotEnabled, NotSupported, Refused, Rejected
-from .registers import (BAUD, BUSDIAG, CLEAR_FAULTS, COMP, DUTY, DUTY_FULL, FAULT_NAMES, GAINS, HEARTBEAT, KD_COMP,
-                        KD_PLAIN, KP_COMP, KP_PLAIN, LAST_RESET, LEASE, LED, MAX_TARGET_COUNTS, MIN_TARGET_COUNTS,
+from . import models
+from .errors import BusUncertain, CalibrationError, Error, Faulted, InvalidArgument, NoReply, NotEnabled, NotSupported, Refused, Rejected
+from .registers import (VOLTAGE_PROTECTION, warning_names, BAUD, BUSDIAG, CLEAR_FAULTS, COMP, DUTY, DUTY_FULL, FAULT_NAMES, GAINS, HEARTBEAT,
+                        LAST_RESET, LEASE, LED, MAX_TARGET_COUNTS, MIN_TARGET_COUNTS,
                         FW231_MARKER, MARKER, MAX_REFERENCE_TICKS, MOTION, PD_CONFIG, PD_CONFIG_READ, POSITION,
                         REPLY_TIMING, SNAPSHOT, STATUS, STATUS_ARM, STATUS_CONTROL, TARGET, TICK_HZ, TORQUE,
                         TORQUE_ENABLE, TORQUE_RAW, TORQUE_RELEASE, decode_busdiag, decode_control_status, decode_drive,
@@ -49,7 +51,8 @@ class State:
 @dataclass(frozen=True)
 class Status:
     """Read 64/68 (the status block): enabled (ARMed), ready, faults by name (registers.FAULT_NAMES) and as bits,
-    supply voltage V, temperature degrees C, calibrated position rad, worst control-tick time us. raw: the decoded
+    supply voltage V, temperature degrees C, calibrated position rad, worst control-tick time us; warnings by name
+    (registers.warning_names: 'supply_high' above 7.0 V, 'voltage_protection_off'; never latched). raw: the decoded
     block."""
     id: int
     enabled: bool
@@ -60,6 +63,7 @@ class Status:
     temperature: float
     position: float
     worst_tick_us: int
+    warnings: list = field(default_factory=list, hash=False)
     raw: dict = field(default_factory=dict, repr=False, hash=False)
 
 
@@ -87,7 +91,7 @@ def to_status(calibration, servo_id, raw) -> Status:
     return Status(id=servo_id, enabled=bool(d['enabled']), ready=bool(d['ready']), faults=fault_names(d['faults']),
                   fault_bits=d['faults'], voltage=d['voltage_mV'] / 1000.0, temperature=float(d['temperature']),
                   position=calibration.to_rad(servo_id, d['position_counts']), worst_tick_us=d['worst_tick_us'],
-                  raw=d)
+                  warnings=warning_names(d['warnings']), raw=d)
 
 
 # ---------------------------------------------------------------------------------------------- argument checks
@@ -234,6 +238,49 @@ def emergency_note(exc, sent):
 
 
 # ---------------------------------------------------------------------------------------------- shared operations
+def voltage_switch(servo, on):
+    """Read (on=None) or write register 1152; NotSupported (with the update command) on images without it."""
+    if on is not None and type(on) is not bool:
+        raise InvalidArgument(f'voltage_protection must be True or False, not {on!r}')
+    wire = servo._wire
+    try:
+        if on is None:
+            return wire.read(servo.id, VOLTAGE_PROTECTION, 1) == b'\x01'
+        wire.write(servo.id, VOLTAGE_PROTECTION, b'\x01' if on else b'\x00')
+    except Rejected:                                       # 1152 is allowed at any time: a refusal means no 1152
+        from .install import update_command
+        raise NotSupported(f'ID {servo.id} runs {servo.info.release}, which has no upper-voltage protection switch '
+                           f'(register 1152, the release 17 images have it): update it with '
+                           f'`{update_command(wire, servo.id)}`') from None
+    return on
+
+
+def _write_was_sent(error):
+    """Whether a failed set-id run had sent its 1144 write (its receipt says write_sent)."""
+    path = getattr(error, 'receipt', None)
+    if not path:
+        return False
+    try:
+        with open(path, encoding='utf-8') as f:
+            return bool(json.load(f).get('write_sent'))
+    except (OSError, ValueError):
+        return True                                       # unknown: assume the worst
+
+
+def _retire(bus, old, new, why_old):
+    """Every Servo / Group handle for `old` or `new` made before now refuses further use (Bus._moved)."""
+    bus._invalidate_identities()
+    generation = bus._identity_generation
+    bus._moved[old] = (generation, why_old)
+    bus._moved[new] = (generation, f'ID {new} now belongs to the servo that was ID {old} (set_id): get a new '
+                                   f'handle with bus.servo({new})')
+
+
+def change_id(servo, new_id, records=None):
+    """Servo.set_id, also returning the run's receipt: (Servo for the new ID, receipt)."""
+    return servo._change_id(new_id, records)
+
+
 def configured(wire, servo_id) -> bool:
     """Read 704 word 2: the PD configuration was written since this power-up (the firmware loses it at every boot)."""
     return bool(struct.unpack_from('<3I', wire.read(servo_id, *PD_CONFIG_READ))[2])
@@ -292,25 +339,31 @@ def arm(bus, servo_id, *, preflighted=False):
         preflighted = True
 
 
-def configure(bus, servo_id, kp, kd):
+def model_of(info):
+    """The openxl330.models.Model of a supported ServoInfo (the XL330-M288 for anything older that names none)."""
+    return models.by_name(info.model) or models.M288
+
+
+def configure(bus, servo_id, kp, kd, model=models.M288):
     """Read the current compensation and config before writing new acknowledged PD settings."""
     wire = bus.wire
     compensation = wire.read(servo_id, *COMP)
     previous_config = wire.read(servo_id, *PD_CONFIG_READ)
-    return write_config(wire, servo_id, kp, kd, compensation, previous_config)
+    return write_config(wire, servo_id, kp, kd, compensation, previous_config, model)
 
 
-def write_config(wire, servo_id, kp, kd, compensation, previous_config):
-    """Write the PD config (320; the servo must be OFF, which the caller checked). The default gains depend on the
-    image: KP_COMP/KD_COMP when its gear-train cancellation is loaded (324 non-zero), else KP_PLAIN/KD_PLAIN. The token
+def write_config(wire, servo_id, kp, kd, compensation, previous_config, model=models.M288):
+    """Write the PD config (320; the servo must be OFF, which the caller checked) with the model's torque constant.
+    The default gains depend on the model and the image: the model's kp_comp/kd_comp when the image's gear-train
+    cancellation is loaded (324 non-zero), else its kp_plain/kd_plain (openxl330.models). The token
     is read 704 word 0 + 1. Error 7 on an OFF servo means a control tick was due (firmware before release 12 did not
     retry that race itself): retried up to 20 times, 5 ms apart; the token stays valid because a 7 never applies the
     config. Returns dict(kp, kd, comp)."""
     comp = any(struct.unpack_from('<9i', compensation))
-    kp = kp if kp is not None else (KP_COMP if comp else KP_PLAIN)
-    kd = kd if kd is not None else (KD_COMP if comp else KD_PLAIN)
+    kp = kp if kp is not None else (model.kp_comp if comp else model.kp_plain)
+    kd = kd if kd is not None else (model.kd_comp if comp else model.kd_plain)
     token = struct.unpack_from('<I', previous_config)[0] % 0xFFFFFFFF + 1
-    data = pd_config(kp, kd, token)
+    data = pd_config(kp, kd, token, gain=model.k_nm_per_v)
     for attempt in range(RETRIES):
         try:
             wire.write(servo_id, PD_CONFIG, data)
@@ -372,7 +425,7 @@ class Servo:
     def __init__(self, bus, info):
         self._bus, self._info = bus, info
         self.id = info.id
-        self._identity_generation = bus._identity_generation
+        self._identity_generation = self._born = bus._identity_generation
 
     def __repr__(self):
         return f'Servo(id={self.id}, release={self._info.release!r})'
@@ -392,6 +445,9 @@ class Servo:
 
     def _require_current_identity(self):
         bus = self._bus
+        moved = bus._moved.get(self.id)
+        if moved and self._born < moved[0]:
+            raise Refused(moved[1])
         if self._identity_generation != bus._identity_generation or self._info.baud != bus.port.baudrate:
             self._info = bus._revalidate_handle(self._info)
             self._identity_generation = bus._identity_generation
@@ -455,12 +511,13 @@ class Servo:
     # ------------------------------------------------------------ control
     def configure(self, kp=None, kd=None) -> dict:
         """Write the PD configuration (N*m/rad, N*m*s/rad). The servo must be OFF (Refused otherwise: call disable()
-        first). Defaults: KP_COMP/KD_COMP when the image's gear-train cancellation is loaded, else KP_PLAIN/KD_PLAIN.
+        first). Defaults per model (openxl330.models): its kp_comp/kd_comp when the image's gear-train cancellation is
+        loaded, else its kp_plain/kd_plain; the XL330-M288's are KP_COMP/KD_COMP and KP_PLAIN/KD_PLAIN.
         Returns dict(kp, kd, comp)."""
         check_config_gains(kp, kd)
         if decode_control_status(self._wire.read(self.id, *STATUS_CONTROL))['enabled']:
             raise refused_while_enabled([self.id], 'PD config not written')
-        return configure(self._bus, self.id, kp, kd)
+        return configure(self._bus, self.id, kp, kd, model_of(self._info))
 
     def enable(self):
         """Turn the PD controller on, holding the servo where it is and discarding any target or duty written while
@@ -589,6 +646,60 @@ class Servo:
     def heartbeat(self):
         """Renew the lease without moving anything."""
         self._wire.write(self.id, HEARTBEAT, b'\x01')
+
+    @property
+    def voltage_protection(self) -> bool:
+        """The upper-voltage protection (register 1152, fast17 rev b): True (every boot) = the upper-voltage trip at
+        the configured limit (default 8.0 V) and the 'supply_high' warning above 7.0 V; False = neither. The 3.5 V
+        lower limit always applies. Settable at any time, also while enabled; back to True at every boot."""
+        return voltage_switch(self, None)
+
+    @voltage_protection.setter
+    def voltage_protection(self, on):
+        if type(on) is not bool:
+            raise InvalidArgument(f'voltage_protection must be True or False, not {on!r}')
+        voltage_switch(self, on)
+
+    def set_id(self, new_id, *, records=None) -> 'Servo':
+        """Change this servo's ID over the bus (openxl330 release 17+, register 1144) and return a Servo for the new
+        ID. The servo must be OFF and new_id free on the bus; nothing is sent until those checks pass (Refused,
+        NotSupported, InvalidArgument). The change is a recorded run like an install (openxl330.install.set_id: receipt
+        and history under records_root(), or `records`). The host calibration entry moves with it, and new_id must not
+        have one of its own (Refused: reset it first). Afterwards this handle, and every Servo or Group handle made
+        before the change for either ID, refuses further use (Refused)."""
+        return change_id(self, new_id, records)[0]
+
+    def _change_id(self, new_id, records):
+        from .install import set_id as set_id_run, update_command
+        wire = self._wire
+        if 'set_id' not in self._info.features:
+            raise NotSupported(f'ID {self.id} runs {self._info.release}, which cannot change its ID over the bus '
+                               f'(release 17 and later can): update it with `{update_command(wire, self.id)}`')
+        cal = self._cal
+        if type(new_id) is int and new_id != self.id and 0 <= new_id <= 252 and cal.has(new_id):
+            raise Refused(f'ID {new_id} already has a calibration entry on this host: reset it first (`openxl330 '
+                          f'calibrate --id {new_id} --reset`) or choose another ID. Nothing was sent')
+        bus, old = self._bus, self.id
+        try:
+            receipt = set_id_run(wire, servo_id=self.id, new_id=new_id, records=records)
+        except Error as e:
+            if _write_was_sent(e):                       # the servo may already answer at new_id
+                _retire(bus, old, new_id, f'the ID change of ID {old} to ID {new_id} did not finish (set_id): find '
+                                          f'the servo with bus.scan(), then get a new handle')
+                note = (f' The host calibration of ID {old} was not moved: once the servo answers at ID {new_id}, run '
+                        f'`openxl330 set-id --id {old} --new-id {new_id}` again (it finishes the move) or call '
+                        f'bus.calibration.move({old}, {new_id}).') if cal.has(old) else ''
+                e.args = (str(e).rstrip() + note,) + e.args[1:]
+            raise
+        _retire(bus, old, new_id, f'ID {old} changed to ID {new_id} (set_id): get a new handle with '
+                                  f'bus.servo({new_id}), or a new Group with ID {new_id}')
+        if cal.has(old):
+            try:
+                cal.move(old, new_id)
+            except CalibrationError as e:
+                raise CalibrationError(f'ID {old} is now ID {new_id}, but its calibration entry could not be moved: '
+                                       f'{e}') from e
+        return bus.servo(new_id), receipt
 
     def reboot(self):
         """Restart the firmware and verify its return. A faster bus needs a free ID at 1 Mbaud during reboot."""

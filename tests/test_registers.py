@@ -107,7 +107,9 @@ def test_constants():
 
 def test_release_id_and_loader_digest_layout():
     """Read 1120 (fast12+): word 0 = release number | variant << 16 | ABI << 24, word 1 = source ID, words 2, 3 = 0."""
-    assert (r.RELEASE_ID, r.LOADER_DIGEST, r.RELEASE_VARIANTS) == ((1120, 16), (1136, 8), ("pd", "comp", "demo", "lab"))
+    assert (r.RELEASE_ID, r.LOADER_DIGEST, r.RELEASE_VARIANTS) == ((1120, 16), (1136, 8),
+                                                                    ("pd", "comp", "demo", "lab", "comp-m077", "comp-log",
+                                                                     "comp-m077-log"))
     raw = struct.pack("<4I", 12 | (1 << 16) | (3 << 24), 0x2FAD3AEA, 0, 0)
     assert r.decode_release_id(raw) == dict(number=12, variant="comp", abi=3, source_id=0x2FAD3AEA)
     assert r.encode_release_id(12, "comp", 3, 0x2FAD3AEA) == raw

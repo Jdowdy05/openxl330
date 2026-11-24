@@ -27,6 +27,7 @@ from importlib import resources
 from pathlib import Path
 
 from ._protocol import framing, packets
+from . import models
 from .errors import Error, InvalidArgument
 from .registers import (DEVCFG_BYTES, DEVCFG_OFFSET, FW231_MARKER, RELEASE_VARIANTS,
                         encode_release_id,
@@ -37,8 +38,11 @@ PROGRAM_LIMIT = 0x0800E000          # first byte of the servo's own calibration/
 PROGRAM_MAX = PROGRAM_LIMIT - PROGRAM_BASE
 
 # Newest first. The first entry is the default. Bundle only qualified firmware.
-RELEASES = ("fw231-comp2-fast16",)
+# 0.2.0: fast17 (release 17, ABI 5) for the XL330-M288 and, as a beta, the XL330-M077, each as a performance image (the
+# default) and a logging image (the DAQ drain and extra counters; no ID log). release_for() picks one.
+RELEASES = ("fw231-comp2-fast17", "fw231-comp2-fast17-log", "fw231-comp2-fast17-m077", "fw231-comp2-fast17-m077-log")
 DEFAULT_RELEASE = RELEASES[0]
+VARIANTS = ("performance", "logging")
 
 _CORRUPT = "bundled image {name} is corrupt ({why}); reinstall openxl330"
 
@@ -136,6 +140,16 @@ class Release:
                                   if re.fullmatch(r"[0-9a-fA-F]{8}", crc) and isinstance(what, str) and what.strip()}
             if not self.known_loaders or len(self.known_loaders) != len(m["known_loaders"]):
                 raise Error(_CORRUPT.format(name=name, why="known_loaders is not a table of 8-digit CRC-32 values"))
+            self.model = m.get("model", 1200)
+            self.set_id = m.get("set_id", False)            # the image has the ID log (register 1144)
+            self.kind = m.get("kind", "performance")        # 'performance' or 'logging' (DAQ drain + counters)
+            self.beta = m.get("beta", False)
+            if (type(self.set_id) is not bool or type(self.beta) is not bool
+                    or self.kind not in ("performance", "logging")):
+                raise Error(_CORRUPT.format(name=name, why="set_id, beta or kind is not valid"))
+            if type(self.model) is not int or models.by_number(self.model) is None or (
+                    models.for_variant(m["variant"]) is not models.by_number(self.model)):
+                raise Error(_CORRUPT.format(name=name, why="unknown model, or a model its variant is not built for"))
             self.name = name
             self.version = m["version"]
             self.marker = m["marker"]
@@ -164,6 +178,18 @@ class Release:
 def bundled(name: str) -> Release:
     """The bundled release `name`, verified once per process (Release(name) verifies it each time)."""
     return Release(name)
+
+
+def release_for(model: int, variant: str = "performance") -> str:
+    """The bundled release for a servo model (number, e.g. 1200) and variant ('performance', the default, or
+    'logging'). InvalidArgument when there is none."""
+    if variant not in VARIANTS:
+        raise InvalidArgument(f"variant {variant!r}: use one of {', '.join(VARIANTS)}")
+    for name in RELEASES:
+        release = bundled(name)
+        if release.model == model and release.kind == variant:
+            return name
+    raise InvalidArgument(f"no bundled {variant} image for model {model}")
 
 
 def known_loaders() -> dict:

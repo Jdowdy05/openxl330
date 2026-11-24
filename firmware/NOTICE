@@ -1,0 +1,20 @@
+openxl330 firmware
+Copyright (c) 2026 the openxl330 authors
+
+This product includes software adapted from BAM (Better Actuator Models),
+https://github.com/Rhoban/bam
+Copyright 2025 Marc Duclusaud & Grégoire Passault
+Licensed under the Apache License, Version 2.0.
+
+firmware/bam_native.c is a fixed-point C re-implementation of the trajectory
+definitions in bam/trajectory.py at commit
+b9e11118e17fe8ec803d430202f6fcf31d57901e. It has been modified from the
+original (rewritten in C11, Q16 fixed point, table-based sine).
+
+research/calibration/* and tests/stock_calibration.c, which read the servo's
+factory calibration table and settings journal, were written independently from
+observed behaviour and data layout, not copied from ROBOTIS code.
+
+DYNAMIXEL and ROBOTIS are trademarks of ROBOTIS Co., Ltd. This project is not
+affiliated with or endorsed by ROBOTIS. No ROBOTIS firmware, bootloader,
+calibration data or firmware-encoding material is included.

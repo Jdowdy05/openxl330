@@ -153,9 +153,11 @@ def test_no_codec_constants_in_the_repository(codec_scan, readout_scan):
     assert any(p.name == "protocol_vectors.json" for p in files)
     hits = {p.relative_to(REPO).as_posix(): codec_scan(p.read_bytes()) for p in files}
     assert not {p: h for p, h in hits.items() if h}
-    home = (PACKAGE / "_protocol" / "framing.py").resolve()
+    # The modules that implement a forward CRC-16: the package's framing, and the firmware's build-time image check
+    # (device-block CRC; part of the pinned release source). Every other check still applies to them.
+    homes = {(PACKAGE / "_protocol" / "framing.py").resolve(), (REPO / "firmware" / "tests" / "check_image.py").resolve()}
     scanners = {REPO / "tests" / "conftest.py", Path(__file__).resolve()}   # they spell out the patterns they flag
-    found = {p.relative_to(REPO).as_posix(): readout_scan(p.read_bytes(), crc_home=p.resolve() == home)
+    found = {p.relative_to(REPO).as_posix(): readout_scan(p.read_bytes(), crc_home=p.resolve() in homes)
              for p in files if p.suffix == ".py" and p.resolve() not in scanners}
     assert any(name.startswith("examples/") for name in found) and any(name.startswith("tests/") for name in found)
     assert not {p: h for p, h in found.items() if h}

@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.2.0 (2026-11-24, beta)
+
+**Not yet run on hardware.**
+- The fast17 firmware this release bundles has not run on a servo yet. Its new features (the ID change over the bus, sensor reacquire, the voltage warning and switch) are verified in simulation and in the firmware's native tests only.
+- The XL330-M077 is a beta, with constants estimated from its gear ratio, not measured.
+- The hardware evidence listed for 0.1.0 applies to fast16.
+
+- **Bundled firmware: fast17** (release 17, register map ABI 5), as four images:
+  - `fw231-comp2-fast17` (XL330-M288, performance; the default), `fw231-comp2-fast17-log` (XL330-M288, logging);
+  - `fw231-comp2-fast17-m077` and `fw231-comp2-fast17-m077-log` (XL330-M077, beta).
+  - The installer picks by the servo's model and `--variant` (`performance` or `logging`; `images.release_for()`). `update` keeps the variant a servo runs, and `recover` reinstalls the failed run's image.
+  - New in the firmware: the ID log (performance images), sensor reacquire after an encoder dropout, the 8.0 V upper limit with its warning and switch, and the XL330-M077 images. The logging images add the 2 kHz data-acquisition drain and extra counters, and have no ID log.
+  - fast16 is no longer bundled. Servos on older releases show an update in `status`.
+
+- **Change an ID over the bus** (release 17+, register 1144):
+  - `Servo.set_id()` and `openxl330 set-id`. The servo must be OFF and the new ID free; nothing is sent until the checks pass.
+  - The change is a recorded run with a receipt. The host calibration entry moves with the servo, and older handles for either ID refuse further use.
+  - `update()` keeps an ID set this way when the new release can (re-applying it if the install erased the log). An older release needs `--allow-id-change`.
+- **XL330-M077 beta:**
+  - `openxl330.models` holds the per-model constants.
+  - The XL330-M077 is accepted only with `--beta` / `allow_beta=True`, and only with an image built for it.
+  - The bus refuses an image built for the other model. `ServoInfo.beta` marks a beta model.
+  - The PD configuration uses each model's torque constant and default gains. XL330-M288 bytes are unchanged.
+- **Upper-voltage protection (release 17):**
+  - The upper limit can be set up to 8.0 V, and that is its default.
+  - Above 7.0 V the servo raises a non-latching warning, `Status.warnings` `'supply_high'`; it clears at 6.8 V. The CLI `status` shows it.
+  - `servo.voltage_protection = False` and `group.set_voltage_protection()` turn off both the warning and the upper trip; it is back on at every boot.
+- **Compatibility with stock Dynamixel software (beta):** `openxl330.compat`, a host-side translation layer.
+  - `StockTable` presents the stock XL330 control table. It respects each servo's EEPROM Homing_Offset and Drive_Mode, which the firmware already applies.
+  - A stand-in for LeRobot 0.7's motor bus (`openxl330[lerobot]`).
+  - The Reachy Mini motor-controller API, with the upper-voltage protection switch.
+  - It serves only the bundled releases. Tested in simulation and against LeRobot's real bus class, not yet on hardware. See [compatibility](docs/compat.md).
+- **Register map ABI 5** (release 17) is recognised. Registers that exist only in the logging images are marked in the [register reference](docs/registers.md). See [servo models](docs/models.md).
+
 ## 0.1.0 (2026-11-23, beta)
 
 The first public release is a beta. Before release, a six-servo arm was installed from stock with `experimental flash-all`, the torque command was checked, and a 600 s loaded run passed. The README lists what has been qualified on hardware.

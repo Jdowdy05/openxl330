@@ -16,7 +16,7 @@ Use the [Python API](api.md) for joint coordinates and normal torque control. An
 | 65 | 1 | W | Status LED. 1 is on and 0 is off. |
 | 126 | 1 | W | Write `0x5A` to clear faults while torque is OFF and the sensor is healthy. |
 | 208 | 16 | R | Firmware signature, beginning with `FW231-PD-BUS`. |
-| 224 | 32 | R | First-trip diagnostic record. |
+| 224 | 32 | R | First-trip diagnostic record. Logging images only. |
 | 256 | 16 | R/W | Signed encoder counts, duration in 2,000 Hz ticks, profile (0 for quintic or 1 for linear), then a reserved zero word. One tick requests a step. The profile word reads zero. |
 | 260 | 4 | W | Signed open-loop duty from −480 to +480. The signed 32-bit minimum returns to PD control. |
 | 264 | 4 | W | Torque command (release 16, ABI 4): signed output torque at the horn in N·m as Q24, passed through the gear-train compensation. The signed 32-bit minimum returns to PD control, holding where the shaft is. Kept while OFF and applied at the next ARM. |
@@ -24,23 +24,23 @@ Use the [Python API](api.md) for joint coordinates and normal torque control. An
 | 320 | 48 | W | PD and estimator configuration. Write while torque is OFF and read back at the PD configuration status block. |
 | 324 | 40 | R/W | Primary gear-train compensation settings. The final word returns the current compensation contribution on read and carries the settings signature on write. |
 | 328 | 8 | W | Live Kp and Kd as signed Q16 values in N·m/rad and N·m·s/rad. |
-| 336 | 16 | R/W | Additional gear-train compensation. Includes duty-dependent back-EMF and the near-stop inertia gate. |
-| 340 | 12 | R/W | High-pass damping settings. The final word returns the filter state on read and carries the settings signature on write. |
 | 640 | 64 | R | Controller snapshot. Includes reference, motion, duty and observer state. Word 4 is the requested output torque after the limit (Q24); word 5's high half is the applied duty; word 9 holds the controller flags (2 saturated, 8 limited); word 13 bit 1 is duty mode and bits 2–3 the torque mode (0 PD, 1 compensated, 2 raw). |
 | 704 | 56 | R | PD configuration status and readback, including the configured flag, token and gains. |
 | 844 | 4 | R/W | Live baud in bit/s. Bit 0 is set while a switch is unconfirmed. Accepts 1000000, 2000000 or 3000000 on write. |
 | 848 | 12 W / 16 R | R/W | Current, temperature and voltage protection settings. Write while torque is OFF. The extra read word gives filtered RMS current. |
 | 852 | 16 | R | Deadline misses. Total, current window, worst window, and packed miss limit and window size. |
-| 856 | 24 | R | Sample-budget counters for sensing and encoder quality. |
+| 856 | 24 or 32 | R | Sample-budget counters for sensing and encoder quality; 32 bytes add the sensor reacquisitions and rejected candidates. Logging images only. |
 | 1000 | 64 | R | Bus identity and diagnostics, including the ABI, UART errors, reply counters, and baud switches and reversions. |
 | 1048 | 32 | R | Program device block. Older installs may report an ID, label or boot baud override here. |
-| 1064 | 4 W / 16, 24, 32, 48 or 52 R | R/W | Reply timing maxima in microseconds. Reads of 24 bytes or more also include predecessor completion timing and late-chain count. Four zero bytes on write reset timing counters. |
+| 1064 | 4 W / 16, 24, 32, 48 or 52 R | R/W | Reply timing maxima in microseconds. Reads of 24 bytes or more also include predecessor completion timing and late-chain count. Four zero bytes on write reset the timing counters (logging images only). |
 | 1072 | 12 W / 16 R | R/W | Optional command lease, from 0 (disabled) to 60,000 ms. Read back the configured action, state, expiry count and time since renewal. |
 | 1076 | 1 | W | Renew an active command lease by an addressed write or Sync Write row. |
-| 1080 | 4 W / 16, 24, 32 or 48 R | R/W | Fast Sync Read counters. A write changes the reply gap in microseconds until reboot. |
-| 1084 | 1 | W | Fast-start path switch in firmware builds that include it. 1 enables it and 0 disables it until reboot. |
+| 1080 | 4 W / 16, 24, 32 or 48 R | R/W | Fast Sync Read counters. A write changes the reply gap in microseconds until reboot (logging images only). |
+| 1084 | 1 | W | Fast-start path switch. 1 enables it and 0 disables it until reboot. Logging images only. |
 | 1088 | 20 | R | Position, estimated velocity, estimated torques, approximate signed current, and applied duty. See [torque estimates](torque.md). |
 | 1112 | 12 | R | Last-reset reason, reset flags and hang counts. Available from fast11. |
 | 1120 | 16 | R | Release number, variant, ABI, and source identifier. Available from fast12. |
 | 1136 | 8 | R | Retained loader CRC-32 and covered byte count. Available from fast12. |
-| 1536 | 32 × n | R | Drain n data-acquisition records from the queue. |
+| 1152 | 1 | R/W | Upper-voltage protection (release 17). 1, the default at every boot, trips at the upper limit (up to 8.0 V) and warns above 7.0 V; status word 3 bit 0 is the warning, and it clears at 6.8 V. 0 turns off both, and status word 3 bit 1 reads 1. Writable while torque is on. |
+| 1144 | 8 | R/W | Set the ID (release 17, ABI 5). Write `SID1`, the new ID (0–252, or 255 to drop the logged ID) and three zero bytes, addressed to the servo while torque is OFF. The reply comes from the old ID, and the new ID answers right after it. A broadcast or Sync Write is ignored. Reads give the logged ID (255 if none), where the effective ID comes from (0 the stock ID, 1 the device block, 2 the log), and the records used and free. |
+| 1536 | 32 × n | R | Drain n data-acquisition records from the queue. Logging images only. |

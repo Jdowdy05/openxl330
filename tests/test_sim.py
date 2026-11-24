@@ -113,7 +113,7 @@ def test_reboot_restores_default_protection_settings(sim_bus, packaged):
     wire, _ = sim_bus([servo])
     wire.write(1, registers.PROTECT, struct.pack("<3I", 800, 60, 65))
     servo.power_cycle()
-    assert struct.unpack_from("<3I", wire.read(1, registers.PROTECT, 16)) == (1000, 65, 70)
+    assert struct.unpack_from("<3I", wire.read(1, registers.PROTECT, 16)) == (1000, 65, 80)     # fast17: 8.0 V
 
 
 def test_latency_tag_and_reset(sim_bus, fw231_servos):
@@ -171,7 +171,7 @@ def test_sim_boots_installed_release(sim_bus, packaged, flash_snapshot_of):
     assert (w0 & 0xFFFF, (w0 >> 16) & 0xFF, w0 >> 24) == (rid["number"], 1, rid["abi"])
     assert (w1, w2, w3) == (rid["source_id"], 0, 0)
     assert wire.read(4, 1136, 8) == struct.pack("<II", zlib.crc32(before[0]), 0x4000)
-    assert registers.decode_busdiag(wire.read(4, *registers.BUSDIAG))["abi"] == rid["abi"] == 4
+    assert registers.decode_busdiag(wire.read(4, *registers.BUSDIAG))["abi"] == rid["abi"] == 5
     with pytest.raises(Rejected) as e:
         wire._flash_read(4, 0x08000000, 16)                             # the release never returns loader bytes
     assert e.value.error == 4
@@ -522,3 +522,51 @@ def test_sim_lease_expiry_stops_the_model_at_its_instant(sim_bus, fw231_servos):
     m = _motion(wire)
     assert s.enabled == 1 and 0.5 < _rad(here - m["position_counts"]) <= 0.62
     assert abs(_target_word(wire)[0] - m["position_counts"]) <= 1
+
+
+# ---------------------------------------------------------------- EEPROM homing offset and reverse (app.c:159-161)
+def _servo_with(home=0, reverse=False):
+    from openxl330 import images
+    eeprom = default_eeprom(1)
+    eeprom[20:24] = struct.pack('<i', home)
+    eeprom[10] = 1 if reverse else 0
+    return SimServo(1, mode='app', program=images.bundled(images.DEFAULT_RELEASE).packaged().raw, eeprom=bytes(eeprom))
+
+
+@pytest.mark.parametrize('home, reverse, reported', [(0, False, 2000), (100, False, 2100), (-300, False, 1700),
+                                                     (0, True, 2096), (100, True, 1996)])
+def test_sim_reports_the_shaft_through_the_eeprom_homing_offset_and_reverse(sim_bus, home, reverse, reported):
+    """FW231 applies the stock EEPROM Homing_Offset (20..23) and the Drive_Mode reverse bit (10, bit 0) in its tracker,
+    as stock firmware does: position = shaft + home, or with reverse 4096 - shaft - home."""
+    s = _servo_with(home, reverse)
+    s.shaft = 2000
+    wire, _ = sim_bus([s])
+    assert struct.unpack('<i', wire.read(1, 96, 4))[0] == reported
+    assert struct.unpack_from('<i', wire.read(1, 1088, 20))[0] == reported
+    assert s.shaft == pytest.approx(2000)
+
+
+def test_sim_reverse_moves_the_shaft_the_other_way(sim_bus):
+    """With reverse the firmware also reverses the motor: a positive duty raises the reported position and lowers the
+    shaft's."""
+    from openxl330 import Bus, Calibration
+    from openxl330.sim import SimPort
+    s = _servo_with(reverse=True)
+    s.shaft = 2000
+    bus = Bus(SimPort([s]), calibration=Calibration(), check_adapter=False)
+    servo = bus.servo(1)
+    servo.configure()
+    servo.enable()
+    before = servo.state().position
+    servo.set_duty(0.3)
+    bus.wire.sleep(0.1)
+    after = servo.state()
+    assert after.position > before and after.velocity > 0 and s.shaft < 2000
+
+
+def test_sim_stock_eeprom_write_keeps_the_shaft(sim_bus):
+    s = SimServo(1)                                            # stock
+    s.shaft = 2000
+    wire, _ = sim_bus([s], 57_600)
+    wire.write(1, 20, struct.pack('<i', 250))
+    assert s.shaft == pytest.approx(2000) and round(s.position) == 2250

@@ -14,12 +14,15 @@ Control-table addresses of the FW231 register map, all little-endian:
               260, 264 or 268 leaves torque or duty mode (the PD then holds where the shaft is). Only the configured
               torque limit and duty saturation apply. OFF and faults clear the mode; a target (256) answers 7 in it.
    320/48 RW  PD config (OFF only; read back 704/56)   328/8 W live gains {i32 Kp Q16 Nm/rad, i32 Kd Q16 Nm*s/rad}
-   324/40, 336/16, 340/12  live compensation          640/64 R snapshot (word 4 commanded output torque Q24,
+   324/40 RW  live compensation (fast17: 336/340 gone) 640/64 R snapshot (word 4 commanded output torque Q24,
               word 13 bit 1 duty mode, bits 2-3 torque mode 0 PD / 1 compensated / 2 raw; decode_drive)
    844/4  RW  baud: write 1000000/2000000/3000000 (also broadcast); read = bps | 1 while unconfirmed
-   848    protections W 12 / R 16    852/16 deadline   856/24 sample budget   1536/32*n DAQ drain
+   848    protections W 12 / R 16 (upper voltage limit 50..80 x 0.1 V, default 80; before fast17 50..70)
+   1152/1 RW  upper-voltage protection (fast17): 1 (every boot) = trip at the 848 limit and warn above 7.0 V
+              (status word 3 bit 0, clears at 6.8 V); 0 = neither (status word 3 bit 1); allowed while armed
+   852/16 deadline   856/24|32 sample budget and 1536/32*n DAQ drain (fast17: logging images only)
    1000/64 R  bus diagnostics (decode_busdiag)  1048/32 R device block (parse_devcfg)
-   1064/24 R  common reply timing maxima (16 B on older releases, W 4 B zero = reset)
+   1064/24 R  common reply timing maxima (16 B on older releases; W 4 B zero = reset, fast17: logging images only)
    1072/12 W  command lease {ms 0..60000 (0 = off), action 0 OFF / 1 hold, 'LEAS'}  R 1072/16 status
    1076/1  W  lease heartbeat (unicast or Sync Write row; a plain broadcast write does not count)
    1080/32 R  Fast Sync Read / fast start counters   1080/4 W gap us (RAM)   1084/1 W fast start on/off (RAM)
@@ -29,6 +32,12 @@ Control-table addresses of the FW231 register map, all little-endian:
    1088/20 R  motion block (fast6+): position, v_hat, estimated torque at the motor and at the horn, signed
               current, applied duty; one Sync / Fast Sync Read for all (decode_motion)
    1120/16 R  release ID (fast12+): release number, variant, ABI, source ID (decode_release_id)
+   1144/8  W  set ID (fast17+, ABI 5): {'SID1', u8 new ID 0..252 or 0xFF (drop the override), u8 0, u16 0}; unicast
+              only (any 0xFE-addressed 1144 is ignored), OFF only (7); size 5, magic/reserved/253/254 error 4. The record
+              is in flash before the reply, which comes from the old ID; the new ID answers right after it (allow
+              0.1 s: the first record after an install formats the page). R 1144/8 {u8 logged ID or 0xFF, u8 source
+              0 NV / 1 device block / 2 log, u16 records used, u16 records free, u16 0}. The effective ID is the
+              logged one, else the device block's, else the NV journal's
    1136/8  R  loader digest (fast12+): {u32 CRC-32 (zlib) of 0x08000000..0x08003FFF, u32 bytes covered}; fast12
               computes it on request (about 13 ms), fast13 and later at boot. From fast12 on, A0 never returns bytes of that
               region
@@ -75,6 +84,8 @@ MOTION = (1088, 20)
 LAST_RESET = (1112, 12)
 RELEASE_ID = (1120, 16)
 LOADER_DIGEST = (1136, 8)
+SET_ID = (1144, 8)                   # fast17+ (ABI 5): over-the-bus ID change, R: the ID log
+VOLTAGE_PROTECTION = 1152            # fast17 rev b: 1 B RW, 1 = upper-voltage trip + >7 V warning on (boot), 0 = off
 
 # --- constants ----------------------------------------------------------------------------------------------
 COUNTS_PER_REV = 4096
@@ -102,12 +113,20 @@ EST_KF30 = (737857423, 69489982, 3272216)
 LEASE_MAGIC = 0x5341454C
 LEASE_ACTIONS = {'off': 0, 'hold': 1}
 LEASE_MAX_MS = 60000
+SET_ID_MAGIC = b'SID1'
+SET_ID_DROP = 0xFF                   # write 1144 with this ID: drop the logged ID (back to the device block / NV ID)
+SET_ID_REPLY_S = 0.1                 # the 1144 reply can wait for a page format after an install (20-40 ms)
+SET_ID_QUIET_S = 0.1                 # bus quiet after a 1144 write: a log-page erase stalls the CPU, and other
+                                     # traffic meanwhile can overrun the servo's RX ring (firmware session)
+ID_SOURCES = ('nv', 'devcfg', 'log')
 
 RESET_REASONS = {0: 'none', 1: 'stall', 2: 'fault', 3: 'DMA', 4: 'watchdog', 5: 'host reboot', 6: 'software',
                  7: 'reset pin', 8: 'power-on'}
 HANG_RESETS = ('stall', 'fault', 'DMA', 'watchdog')
 RCC_FLAGS = ((1, 'OBL'), (2, 'PIN'), (3, 'POWER'), (4, 'SOFTWARE'), (5, 'IWDG'), (6, 'WWDG'), (7, 'LOWPOWER'))
-RELEASE_VARIANTS = ('pd', 'comp', 'demo', 'lab')    # read 1120 word 0 bits 16..23: plain PD, PD-comp, demo, lab
+# read 1120 word 0 bits 16..23: plain PD, PD-comp, demo, lab, then (release 17+) PD-comp for the XL330-M077 (beta),
+# and the logging builds (DAQ drain + extra counters) of PD-comp for the XL330-M288 and the XL330-M077
+RELEASE_VARIANTS = ('pd', 'comp', 'demo', 'lab', 'comp-m077', 'comp-log', 'comp-m077-log')
 
 # --- device block (read 1048/32, at DEVCFG_OFFSET in the program; the default one in every bundled image) ---
 # 'XLDC', version 1, ID (0xFF = the stock NV journal ID), start-up baud code (0xFF = 1 Mbaud, 4 = 2M, 5 = 3M), 0xFF,
@@ -135,14 +154,26 @@ def parse_devcfg(block):
 
 # --- decoders -----------------------------------------------------------------------------------------------
 def decode_status(raw):
-    """Read 64/68: 17 little-endian words."""
+    """Read 64/68: 17 little-endian words. On fast17 'drops' (word 11) and 'queue_period' (word 12) are constants (0 and
+    500 << 16) outside the logging images, which have the data-acquisition queue."""
     v = struct.unpack('<8I2i7I', raw)
-    names = ('enabled', 'ready', 'allowed', 'reserved', 'faults', 'hardware_faults', 'samples', 'time_us',
+    names = ('enabled', 'ready', 'allowed', 'warnings', 'faults', 'hardware_faults', 'samples', 'time_us',
              'position_counts', 'velocity_mrad_s', 'worst_tick_us', 'drops', 'queue_period', 'origin', 'raw',
              'supply', 'temperature')
     d = dict(zip(names, v))
     d['voltage_mV'] = d['supply'] & 0xFFFF
+    d['reserved'] = d['warnings']        # 0.1.0's name for word 3
     return d
+
+
+WARNING_NAMES = {1: 'supply_high', 2: 'voltage_protection_off'}   # status word 3 (fast17 rev b), never latched
+
+
+def warning_names(bits):
+    """Names of the status warning bits: 'supply_high' (supply above 7.0 V; clears at 6.8 V), 'voltage_protection_off'
+    (register 1152 is 0: no upper-voltage trip and no warning); an unknown bit is 'bit N'."""
+    names = [name for bit, name in sorted(WARNING_NAMES.items()) if bits & bit]
+    return names + [f'bit {b}' for b in range(32) if (bits & ~sum(WARNING_NAMES)) >> b & 1]
 
 
 DRIVE_MODES = ('position', 'torque', 'raw_torque')
@@ -259,6 +290,21 @@ def decode_release_id(raw):
     code = (w0 >> 16) & 0xFF
     variant = RELEASE_VARIANTS[code] if code < len(RELEASE_VARIANTS) else f'code {code}'
     return dict(number=w0 & 0xFFFF, variant=variant, abi=w0 >> 24, source_id=w1)
+
+
+def encode_set_id(new_id):
+    """Write 1144/8: the new ID 0..252, or SET_ID_DROP (0xFF) to drop the logged ID."""
+    if type(new_id) is not int or not (0 <= new_id <= 252 or new_id == SET_ID_DROP):
+        raise InvalidArgument(f'new ID {new_id!r}: use an integer 0..252 (253 and 254 are not servo IDs)')
+    return SET_ID_MAGIC + bytes([new_id, 0, 0, 0])
+
+
+def decode_id_log(raw):
+    """Read 1144/8: dict(log_id (None when no ID is logged), source of the effective ID 'nv' / 'devcfg' / 'log',
+    used, free records)."""
+    log_id, source, used, free, _ = struct.unpack('<BBHHH', raw)
+    return dict(log_id=None if log_id == SET_ID_DROP else log_id,
+                source=ID_SOURCES[source] if source < len(ID_SOURCES) else f'code {source}', used=used, free=free)
 
 
 def decode_lease(raw):

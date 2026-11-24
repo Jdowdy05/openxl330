@@ -5,3 +5,6 @@ dist/
 .pytest_cache/
 .DS_Store
 build/
+
+# firmware builds (firmware/build.sh)
+firmware/build/

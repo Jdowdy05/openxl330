@@ -1,0 +1,12 @@
+#include "protocol.h"
+#include <assert.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+static uint8_t *normal_ptr,*flash_ptr;static unsigned calls;static bool in_callback,fail_flash;
+static uint8_t value(unsigned n){return n%3==0?255:n%3==1?255:253;}
+static uint8_t read_cb(void*c,uint16_t a,uint16_t n,uint8_t*out){(void)c;assert(!in_callback);in_callback=true;assert(a==64 && n==384);normal_ptr=out;for(unsigned j=0;j<n;j++)out[j]=value(j);calls++;in_callback=false;return 0;}
+static uint8_t flash_cb(void*c,uint32_t a,uint16_t n,uint8_t*out){(void)c;assert(!in_callback);in_callback=true;assert(a==0x08004000 && n==96);flash_ptr=out;calls++;if(fail_flash){in_callback=false;return 4;}for(unsigned j=0;j<n;j++)out[j]=value(j+1);in_callback=false;return 0;}
+static unsigned frame(uint8_t*p,uint8_t op,const uint8_t*arg,unsigned n){p[0]=p[1]=255;p[2]=253;p[3]=0;p[4]=1;p[5]=(uint8_t)(n+3);p[6]=0;p[7]=op;memcpy(p+8,arg,n);uint16_t crc=dxl_crc(p,(uint16_t)(8+n));p[8+n]=(uint8_t)crc;p[9+n]=(uint8_t)(crc>>8);return 10+n;}
+static unsigned decode(const uint8_t*out,unsigned n,uint8_t*body){assert(dxl_crc(out,(uint16_t)(n-2))==(out[n-2]|((uint16_t)out[n-1]<<8)));unsigned at=0;for(unsigned j=7;j<n-2;j++){body[at++]=out[j];if(at>=3 && body[at-3]==255 && body[at-2]==255 && body[at-1]==253){assert(out[j+1]==253);j++;}}return at;}
+int main(void){dxl_io io={.id=1,.firmware=226,.model=1200,.read=read_cb,.flash_read=flash_cb};uint8_t wire[32],out[640],saved[640],body[400];uint8_t normal[]={64,0,128,1},flash[]={0,64,0,8,96,0};unsigned n=frame(wire,2,normal,4);dxl_result r=dxl_process(&io,wire,(uint16_t)n,out,sizeof out);assert(r.reply_bytes && calls==1 && decode(out,r.reply_bytes,body)==386);for(unsigned j=0;j<384;j++)assert(body[j+2]==value(j));unsigned saved_n=r.reply_bytes;memcpy(saved,out,saved_n);n=frame(wire,0xa0,flash,6);r=dxl_process(&io,wire,(uint16_t)n,out,sizeof out);assert(calls==2 && flash_ptr==normal_ptr && decode(out,r.reply_bytes,body)==98);for(unsigned j=0;j<96;j++)assert(body[j+2]==value(j+1));/* Prior reply is caller-owned and survives subsequent scratch use. */assert(dxl_crc(saved,(uint16_t)(saved_n-2))==(saved[saved_n-2]|((uint16_t)saved[saved_n-1]<<8)));fail_flash=true;r=dxl_process(&io,wire,(uint16_t)n,out,sizeof out);assert(calls==3 && decode(out,r.reply_bytes,body)==2 && body[1]==4);puts("protocol scratch: one foreground callback at a time,shared384B read/A0 buffer,maxstuffing,caller reply lifetime,error payload exclusion PASS");}

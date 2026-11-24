@@ -71,7 +71,7 @@ def test_set_baud_refuses_unsupported_source(compatibility):
         read = unsupported.read
         unsupported.read = lambda a, n: (4, b"") if (a, n) == registers.MARKER else read(a, n)
     else:
-        unsupported.release_id = dict(unsupported.release_id, abi=5)
+        unsupported.release_id = dict(unsupported.release_id, abi=6)          # newer than MAX_ABI (5)
     with bus_on([supported, unsupported]) as bus:
         assert not bus.scan()[1].supported
         with pytest.raises(UnsupportedServo, match="ID 2"):

@@ -11,15 +11,15 @@
 
 # openxl330
 
-openxl330 is replacement firmware for the XL330-M288 smart servo, with a Python library and command-line installer. It provides 2 kHz torque-based position control, gear-train compensation, grouped motion commands, and position, velocity and estimated torque feedback. It uses Dynamixel Protocol 2.0 framing with its own [register map](https://github.com/Jdowdy05/openxl330/blob/main/docs/registers.md).
+openxl330 is replacement firmware for the XL330-M288 smart servo (and, as a beta, the XL330-M077), with a Python library and command-line installer. It provides 2 kHz torque-based position control, gear-train compensation, grouped motion commands, and position, velocity and estimated torque feedback. It uses Dynamixel Protocol 2.0 framing with its own [register map](https://github.com/Jdowdy05/openxl330/blob/main/docs/registers.md).
 
 > **Installing replaces the stock ROBOTIS firmware. There is no supported way back to stock (an experimental route through ROBOTIS Dynamixel Wizard is described in [returning to stock firmware](https://github.com/Jdowdy05/openxl330/blob/main/docs/returning-to-stock.md)). Not affiliated with ROBOTIS. Use at your own risk.**
 
 ## Supported hardware
 
-The installer supports the **XL330-M288** (model 1200). The proven starting combinations use stock firmware V50, V52 or V53 and retained loader v6. Use a half-duplex TTL Dynamixel adapter and a separate servo power supply. See [wiring](https://github.com/Jdowdy05/openxl330/blob/main/docs/wiring.md) and [adapter setup](https://github.com/Jdowdy05/openxl330/blob/main/docs/adapters.md).
+The installer supports the **XL330-M288** (model 1200). The proven starting combinations use stock firmware V50, V52 or V53 and retained loader v6. The **XL330-M077** (model 1190) is a **beta**: its constants are estimated from its gear ratio, not yet measured on hardware, and installing on one needs `--beta` (see [servo models](https://github.com/Jdowdy05/openxl330/blob/main/docs/models.md)). Use a half-duplex TTL Dynamixel adapter and a separate servo power supply. See [wiring](https://github.com/Jdowdy05/openxl330/blob/main/docs/wiring.md) and [adapter setup](https://github.com/Jdowdy05/openxl330/blob/main/docs/adapters.md).
 
-Set a unique ID for each servo in Dynamixel Wizard while it still runs stock firmware. Install one servo at a time using the [install guide](https://github.com/Jdowdy05/openxl330/blob/main/docs/install.md). This release keeps the ID in the servo’s nonvolatile settings and starts at 1 Mbaud after each boot. The ID you set in Dynamixel Wizard before installing is permanent in v1; changing it after flashing is not supported (except `openxl330 update --allow-id-change`, which moves a servo back to its stock NV ID).
+Set a unique ID for each servo in Dynamixel Wizard while it still runs stock firmware. Install one servo at a time using the [install guide](https://github.com/Jdowdy05/openxl330/blob/main/docs/install.md). This release keeps the ID in the servo’s nonvolatile settings and starts at 1 Mbaud after each boot. Installing keeps the ID the servo has on its stock firmware, so set a unique ID in Dynamixel Wizard first; afterwards change it over the bus with `openxl330 set-id` (Dynamixel Wizard cannot change the ID of a servo running openxl330).
 
 ## Install the Python package
 
@@ -29,12 +29,12 @@ Use Python 3.10 or later.
 pip install openxl330
 ```
 
-Until the package is available on PyPI, build the wheel and source archive from the source tree, then install the wheel in your environment.
+To install from a checkout instead, build the wheel and source archive from the source tree, then install the wheel in your environment.
 
 ```sh
 python -m pip install build
 python -m build
-python -m pip install dist/openxl330-0.1.0-py3-none-any.whl
+python -m pip install dist/openxl330-0.2.0-py3-none-any.whl
 ```
 
 ## Quickstart
@@ -107,7 +107,7 @@ The plots were made from the raw recordings of these runs.
 
 ## Protections
 
-The firmware turns torque OFF and latches a fault for three protections: supply voltage outside 3.5–7.0 V, temperature at 65 °C or above, and a current overload above 1.0 A RMS (I²t, time constant about 2 s). These defaults apply after every boot, and you can change the limits. There are no travel or speed cut-offs. The only other faults are integrity checks: `sensor` when more than 5 % of encoder or ADC samples in 1 s are bad, and `timing` when more than 5 % of control ticks in 1 s miss their deadline. The [API guide](https://github.com/Jdowdy05/openxl330/blob/main/docs/api.md#protections) shows how to read them.
+The firmware turns torque OFF and latches a fault for three protections: supply voltage outside 3.5–8.0 V (with a warning, not a fault, above 7.0 V; one switch turns off both the warning and the upper trip), temperature at 65 °C or above, and a current overload above 1.0 A RMS (I²t, time constant about 2 s). These defaults apply after every boot, and you can change the limits. There are no travel or speed cut-offs. The only other faults are integrity checks: `sensor` when more than 5 % of encoder or ADC samples in 1 s are bad, and `timing` when more than 5 % of control ticks in 1 s miss their deadline. The [API guide](https://github.com/Jdowdy05/openxl330/blob/main/docs/api.md#protections) shows how to read them.
 
 ## Firmware compatibility
 
@@ -119,9 +119,26 @@ The firmware turns torque OFF and latches a fault for three protections: supply 
 | fast13 | Caches the loader CRC at boot |
 | fast14 | Generates the temperature lookup table from a thermistor model with the same table values as fast13 |
 | fast15 | Records when the watchdog's settings fail to apply at start-up (`last_reset()`: `iwdg_update_timeout`) |
-| `fw231-comp2-fast16` (bundled default) | Direct torque command in N·m (`set_torque()`; register map ABI 4) |
+| fast16 | Direct torque command in N·m (`set_torque()`; register map ABI 4) |
+| `fw231-comp2-fast17` (bundled default), `-log`, `-m077`, `-m077-log` | Over-the-bus ID change (`openxl330 set-id`), sensor reacquire after an encoder dropout, the 8.0 V upper limit with its warning and switch, the XL330-M077 beta images, and logging images (register map ABI 5) |
 
-Use `openxl330 version` to check the bundled release and `openxl330 status --ids 1-3 --port /dev/ttyUSB0` to check what the servos are running. See the [API guide](https://github.com/Jdowdy05/openxl330/blob/main/docs/api.md) for application compatibility and [troubleshooting](https://github.com/Jdowdy05/openxl330/blob/main/docs/troubleshooting.md) for reported faults and errors. Hardware qualification so far (macOS): a six-servo arm on a U2D2. All six were installed from stock V52 with `experimental flash-all`, the torque command was checked, and a 600 s loaded run at 1 Mbaud passed with no faults, resets or missed deadlines. Before that, BusLinker and U2D2 were qualified with three servos on one bus at 1 Mbaud. Not yet checked physically: the 65 °C shutoff.
+**fast17 has not run on hardware yet.** Its new features (the ID change over the bus, sensor reacquire, the voltage warning and switch) are verified in simulation and in the firmware's native tests only; hardware validation is pending. The XL330-M077 images are a beta with constants estimated from the gear ratio.
+
+Use `openxl330 version` to check the bundled release and `openxl330 status --ids 1-3 --port /dev/ttyUSB0` to check what the servos are running. See the [API guide](https://github.com/Jdowdy05/openxl330/blob/main/docs/api.md) for application compatibility and [troubleshooting](https://github.com/Jdowdy05/openxl330/blob/main/docs/troubleshooting.md) for reported faults and errors. Hardware qualification so far (macOS, with fast16, the previous release): a six-servo arm on a U2D2. All six were installed from stock V52 with `experimental flash-all`, the torque command was checked, and a 600 s loaded run at 1 Mbaud passed with no faults, resets or missed deadlines. Before that, BusLinker and U2D2 were qualified with three servos on one bus at 1 Mbaud. Not yet checked physically: the 65 °C shutoff.
+
+## Using stock Dynamixel software (beta)
+
+`openxl330.compat` lets software written for stock XL330 servos drive openxl330 servos. It translates on the host, so nothing changes in the firmware and nothing is written to a servo's nonvolatile memory. It provides:
+
+- `StockTable`: the stock control table (names, addresses, units) for any code that uses stock register names;
+- a stand-in bus for Hugging Face LeRobot 0.7 (`pip install "openxl330[lerobot]"`);
+- the Pollen Robotics Reachy Mini motor-controller API.
+
+It has been tested against simulated servos and LeRobot's own bus class, not yet on hardware. See [compatibility with stock Dynamixel software](https://github.com/Jdowdy05/openxl330/blob/main/docs/compat.md).
+
+## Firmware source
+
+The firmware source of the bundled release is in [firmware/](https://github.com/Jdowdy05/openxl330/tree/main/firmware), under the MIT licence, with one Apache-2.0 component. Its [README](https://github.com/Jdowdy05/openxl330/blob/main/firmware/README.md) has the rebuild recipe; each build reproduces the bundled `firmware.bin` byte for byte. The package installs only the bundled, pre-encoded images: the loader's upload encoding is not part of the repository.
 
 ## Experimental: flash-all and going back to stock
 
@@ -129,7 +146,7 @@ Use `openxl330 version` to check the bundled release and `openxl330 status --ids
 
 ## Known limitations
 
-IDs cannot yet be changed over the bus (set them in Dynamixel Wizard before installing; planned for v1.1). A long encoder dropout near top speed latches a sensor fault, and a stuck encoder bus needs a power cycle; fixes for both are designed but not yet in the firmware. There is no graphical tool yet (planned for v1.1). See [known limitations](https://github.com/Jdowdy05/openxl330/blob/main/docs/limitations.md).
+The fast17 firmware has not run on hardware yet: the ID change over the bus, sensor reacquire and the voltage switch are verified in simulation and native tests only. The logging images cannot change IDs (no room for the ID log). A stuck encoder bus needs a power cycle; the bus-clear fix did not fit in flash. There is no graphical tool yet. See [known limitations](https://github.com/Jdowdy05/openxl330/blob/main/docs/limitations.md).
 
 ## Adapters
 

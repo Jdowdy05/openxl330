@@ -84,18 +84,33 @@ def test_no_private_paths():
         ("jor", "dan"),
     )
     markers = ["".join(parts).lower().encode() for parts in fragments]
-    generated = {".venv", ".git", ".pytest_cache", "__pycache__", "build", "dist"}
     offenders = []
+    for path in _publishable_files():
+        relative = path.relative_to(ROOT)
+        published_name = relative.as_posix().lower().encode()
+        content = path.read_bytes().lower()
+        if any(marker in published_name or marker in content for marker in markers):
+            offenders.append(relative)
+    assert not offenders, f"Private identifiers found in {offenders}"
+
+
+def _publishable_files():
+    """Every file a commit could publish: in a git checkout, the tracked and the untracked-but-not-ignored files (so a
+    worktree's .git file and ignored local folders are not scanned); elsewhere (an unpacked sdist), every file outside
+    the generated folders."""
+    try:
+        listed = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd=ROOT,
+                                capture_output=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        listed = None
+    if listed:
+        return [ROOT / name.decode() for name in listed.split(b"\0") if name and (ROOT / name.decode()).is_file()]
+    generated = {".venv", ".git", ".pytest_cache", "__pycache__", "build", "dist"}
+    files = []
     for directory, subdirectories, filenames in os.walk(ROOT):
         subdirectories[:] = [name for name in subdirectories if name not in generated]
-        for name in filenames:
-            path = Path(directory) / name
-            relative = path.relative_to(ROOT)
-            published_name = relative.as_posix().lower().encode()
-            content = path.read_bytes().lower()
-            if any(marker in published_name or marker in content for marker in markers):
-                offenders.append(relative)
-    assert not offenders, f"Private identifiers found in {offenders}"
+        files += [Path(directory) / name for name in filenames]
+    return files
 
 
 def test_troubleshooting_covers_every_error():
@@ -107,9 +122,9 @@ def test_troubleshooting_covers_every_error():
     assert not missing
 
 
-PERMANENT_ID = ("The ID you set in Dynamixel Wizard before installing is permanent in v1; changing it after flashing is "
-                "not supported (except `openxl330 update --allow-id-change`, which moves a servo back to its stock NV "
-                "ID).")
+PERMANENT_ID = ("Installing keeps the ID the servo has on its stock firmware, so set a unique ID in Dynamixel Wizard "
+                "first; afterwards change it over the bus with `openxl330 set-id` (Dynamixel Wizard cannot change the "
+                "ID of a servo running openxl330).")
 
 
 def _text(relative):
@@ -137,13 +152,13 @@ def test_readme_installs_from_pypi_first():
 
 def test_protection_defaults_are_documented_and_the_snippet_runs(offline, capsys):
     readme = _text("README.md")
-    assert "3.5–7.0 V" in readme and "65 °C" in readme and "1.0 A RMS" in readme
+    assert "3.5–8.0 V" in readme and "65 °C" in readme and "1.0 A RMS" in readme
     guide = (ROOT / "docs" / "api.md").read_text(encoding="utf-8")
     section = guide.split("## Protections", 1)[1].split("\n## ", 1)[0]
-    assert "3.5 V" in section and "7.0 V" in section and "65 °C" in section and "1.0 A" in section
+    assert "3.5 V" in section and "8.0 V" in section and "65 °C" in section and "1.0 A" in section
     snippet = re.search(r"(?ms)^```python[ \t]*\n(.*?)^```", section).group(1)
     exec(compile(snippet, "docs/api.md protections", "exec"), {})
-    assert capsys.readouterr().out.strip() == "1.0 A RMS, 65 °C, 7.0 V, now 0.0 A RMS"
+    assert capsys.readouterr().out.strip() == "1.0 A RMS, 65 °C, 8.0 V, now 0.0 A RMS"
 
 
 def test_internal_notes_are_not_published():
@@ -154,3 +169,18 @@ def test_internal_notes_are_not_published():
 def test_binary_images_are_marked_binary_for_git():
     rules = (ROOT / ".gitattributes").read_text(encoding="utf-8").split("\n")
     assert "*.bin binary" in rules and "*.enc binary" in rules
+
+
+def test_models_doc_lists_every_model():
+    from openxl330 import models
+    text = _text("docs/models.md")
+    for m in models.MODELS.values():
+        assert m.name in text and str(m.number) in text, m.name
+        assert ("beta" in text.lower()) if m.beta else True
+    assert "77.5" in text and "288.4" in text and "--beta" in text
+
+
+def test_docs_describe_set_id():
+    api, install_doc = _text("docs/api.md"), _text("docs/install.md")
+    assert "servo.set_id(" in api and "allow_beta" in api
+    assert "openxl330 set-id" in install_doc and "--beta" in install_doc

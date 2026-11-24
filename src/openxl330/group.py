@@ -17,7 +17,7 @@ from .registers import (COMP, GAINS, HEARTBEAT, LEASE, LED, MOTION, PD_CONFIG_RE
 from .servo import (Servo, arm, check_arm_status, check_config_gains, check_direction, check_gains, check_move,
                     check_torque, check_zero, drive_of, emergency_note, ids_text, lease_ms, not_configured, not_enabled,
                     refused_while_enabled, require_torque_command, targets_rejected, to_counts, to_state, to_status,
-                    write_config)
+                    write_config, model_of)
 from .wire import SYNC_WRITE_SETTLE_S
 
 
@@ -212,6 +212,13 @@ class Group:
             bus.wire.mark_uncertain('OFF interrupted')
         return bus.wire.emergency_off(ids, bauds=[bus.port.baudrate, self._validated_baud])
 
+    def set_voltage_protection(self, on: bool) -> None:
+        """Servo.voltage_protection for every member, one acknowledged write each (register 1152)."""
+        if type(on) is not bool:
+            raise InvalidArgument(f'voltage_protection must be True or False, not {on!r}')
+        for servo_id in self._ids:
+            self._servos[servo_id].voltage_protection = on
+
     def configure(self, kp=None, kd=None) -> dict:
         """Write the PD configuration to every member; all must be OFF (Refused otherwise: call disable() first).
         Gains default per servo (see Servo.configure). Returns {id: dict(kp, kd, comp)}."""
@@ -223,7 +230,7 @@ class Group:
             raise refused_while_enabled(on, 'PD config not written')
         compensation = group_rows(wire, self._ids, COMP, lambda i, raw: raw)
         config = group_rows(wire, self._ids, PD_CONFIG_READ, lambda i, raw: raw)
-        return {i: write_config(wire, i, kp, kd, compensation[i], config[i]) for i in self._ids}
+        return {i: write_config(wire, i, kp, kd, compensation[i], config[i], model_of(self._infos[i])) for i in self._ids}
 
     def move(self, targets, duration=0.0, profile='quintic', units='rad', verify=True, *,
              settle_s=SYNC_WRITE_SETTLE_S):

@@ -18,9 +18,9 @@ from .bus import BUS_BAUDS
 from .registers import TORQUE_ENABLE
 from .wire import APP_BAUD, LOADER_BAUD
 
-PERMANENT_ID = ("The ID you set in Dynamixel Wizard before installing is permanent in v1; changing it after flashing is "
-                "not supported (except `openxl330 update --allow-id-change`, which moves a servo back to its stock NV "
-                "ID).")
+PERMANENT_ID = ("Installing keeps the ID the servo has on its stock firmware, so set a unique ID in Dynamixel Wizard "
+                "first; afterwards change it over the bus with `openxl330 set-id` (Dynamixel Wizard cannot change the "
+                "ID of a servo running openxl330).")
 CONFIRM = "This replaces the stock firmware; there is no supported way back. Continue? [y/N] "
 EXPERIMENTAL_NOTE = ("EXPERIMENTAL: tested on one bench with two XL330-M288 servos; see docs/experimental.md before "
                      "relying on it.")
@@ -131,8 +131,24 @@ def _parser():
                         help="allow a servo whose ID came from an earlier tool's device block to move back to its "
                              "stock NV ID")
     for sub in (first, update):
-        sub.add_argument("--release", choices=images.release_names(), default=images.DEFAULT_RELEASE,
-                         help=f"the bundled release to install (default {images.DEFAULT_RELEASE})")
+        sub.add_argument("--release", choices=images.release_names(), default=None,
+                         help="the bundled release to install (default: the one for the servo's model and --variant)")
+        sub.add_argument("--variant", choices=images.VARIANTS, default=None,
+                         help="performance (the default for install) or logging (the data-acquisition drain and extra "
+                              "counters, no ID log); update keeps the variant the servo runs unless this is given")
+        sub.add_argument("--beta", action="store_true",
+                         help="accept a beta servo model (the XL330-M077, constants not yet measured); it needs a "
+                              "release built for that model")
+
+    set_id = command("set-id", "Change a servo's ID over the bus (openxl330 release 17 and later).",
+                     "Change a servo's ID over the bus (openxl330 release 17 and later). The servo must be OFF and the "
+                     "new ID free on the bus. The new ID stays after power-off, and the host calibration entry moves "
+                     "with it.")
+    set_id.add_argument("--id", type=_servo_id, required=True, help="the servo's current ID")
+    set_id.add_argument("--new-id", type=_servo_id, required=True, metavar="ID",
+                        help="the ID to give it (0..252, not used by another servo)")
+    set_id.add_argument("--yes", action="store_true",
+                        help="do not ask for confirmation (required when not run in a terminal)")
 
     recover = command("recover", "Finish installing on a servo waiting in the loader.")
     recover.add_argument("--id", type=_servo_id, required=True,
@@ -209,8 +225,11 @@ def _experimental_parser(parent):
                        help="also install over stock firmware versions other than the proven V50, V52 and V53")
     flash.add_argument("--yes", action="store_true",
                        help="do not ask for confirmation (required when not run in a terminal)")
-    flash.add_argument("--release", choices=images.release_names(), default=images.DEFAULT_RELEASE,
-                       help=f"the bundled release to install (default {images.DEFAULT_RELEASE})")
+    flash.add_argument("--release", choices=images.release_names(), default=None,
+                       help=f"the bundled release to install (default {images.DEFAULT_RELEASE}, or its logging image "
+                            f"with --variant logging)")
+    flash.add_argument("--variant", choices=images.VARIANTS, default=None,
+                       help="performance (the default) or logging")
     uninstall = command("uninstall", "Go back to stock, step 1: record a servo's settings and leave it waiting for "
                                      "Dynamixel Wizard's Firmware Recovery.")
     uninstall.add_argument("--id", type=_servo_id, required=True, help="the servo's ID (it must run openxl330 at "
@@ -290,14 +309,14 @@ def _status(args, bus):
                          supported=info.supported, release=info.release, baud=info.baud, update_available=update))
         if status is None:
             identity = f"{info.firmware} (ABI {info.abi})" if info.abi is not None else info.firmware
-            rows.append((info.id, identity, "unverified", "-", "-", "-", "-"))
+            rows.append((info.id, identity, "unverified", "-", "-", "-", "-", "-"))
         else:
             rows.append((info.id, info.release or "-", "ON" if status.enabled else "OFF",
                          ", ".join(status.faults) or "-", f"{status.position:.4f}", f"{status.voltage:.2f}",
-                         f"{status.temperature:g}"))
+                         f"{status.temperature:g}", ", ".join(WARNING_TEXT.get(w, w) for w in status.warnings) or "-"))
     if data or args.json:
-        _show(args, data, ("ID", "Release", "Torque", "Faults", "Position (rad)", "Supply (V)", "Temp (°C)"),
-              rows)
+        _show(args, data, ("ID", "Release", "Torque", "Faults", "Position (rad)", "Supply (V)", "Temp (°C)",
+                           "Warnings"), rows)
     if not args.json:
         for row in data:
             if row["update_available"]:
@@ -369,6 +388,59 @@ def _confirm_install(args):
         raise Error("not installed: not confirmed. Nothing was sent")
 
 
+WARNING_TEXT = {"supply_high": "supply above 7.0 V", "voltage_protection_off": "upper voltage protection off"}
+SET_ID_CONFIRM = "This changes ID {id} to ID {new}; the servo keeps the new ID after power-off. Continue? [y/N] "
+
+
+def _confirm_set_id(args):
+    """Before the port opens (a real bus only; --yes skips it)."""
+    if args.yes or args.sim is not None:
+        return
+    if not _isatty(sys.stdin):
+        raise Error("ID not changed: changing an ID needs a confirmation. Run it in a terminal, or pass --yes. "
+                    "Nothing was sent")
+    print(SET_ID_CONFIRM.format(id=args.id, new=args.new_id), end="", file=sys.stderr, flush=True)
+    if sys.stdin.readline().strip().lower() not in ("y", "yes"):
+        raise Error("ID not changed: not confirmed. Nothing was sent")
+
+
+def _set_id(args, bus):
+    from .servo import change_id
+    try:
+        servo = bus.servo(args.id)
+    except NoReply:
+        if _finish_id_change(args, bus):
+            return 0
+        raise
+    records = _sim_records(args)
+    new, receipt = change_id(servo, args.new_id, records)
+    root = records if records is not None else install.records_root()
+    _show(args, receipt, ("ID", "Previous ID", "Receipt"),
+          [(new.id, args.id, root / receipt["run_dir"] / "receipt.json")])
+    return 0
+
+
+def _finish_id_change(args, bus):
+    """A re-run after a set-id whose reply was lost: install.finished_set_id proves, from that run's receipt and the
+    servo's calibration fingerprint, that the servo now at the new ID is the one it changed. Then finish the host side
+    (the calibration entry). Returns True when it did. A --sim run keeps no records between runs, so it never does."""
+    if args.sim is not None:
+        return False
+    try:
+        bus.servo(args.new_id)
+        receipt = install.finished_set_id(bus.wire, servo_id=args.id, new_id=args.new_id)
+    except Error:
+        return False
+    if receipt is None:
+        return False
+    moved = bus.calibration.has(args.id)
+    if moved:
+        bus.calibration.move(args.id, args.new_id)
+    print(f"ID {args.id} already changed to ID {args.new_id} (the set-id run {receipt['run_dir']}); "
+          + ("moved its host calibration." if moved else "no host calibration to move."))
+    return True
+
+
 def _sim_records(args):
     """None (the real records), or for --sim a temporary folder: simulated runs never reach the user's records."""
     if args.sim is None:
@@ -389,10 +461,11 @@ def _installation(args, bus):
         if args.command == "install":
             receipt = install.from_stock(wire, stock_id=args.stock_id, stock_baud=args.stock_baud,
                                          release=args.release, allow_untested=args.allow_untested, records=records,
-                                         on_progress=progress)
+                                         on_progress=progress, allow_beta=args.beta, variant=args.variant)
         elif args.command == "update":
             receipt = install.update(wire, servo_id=args.id, release=args.release,
-                                     allow_id_change=args.allow_id_change, records=records, on_progress=progress)
+                                     allow_id_change=args.allow_id_change, records=records, on_progress=progress,
+                                     allow_beta=args.beta, variant=args.variant)
         else:
             receipt = install.recover(wire, servo_id=args.id, receipt=args.receipt, loader_fresh=args.loader_fresh,
                                       records=records, on_progress=progress)
@@ -470,7 +543,7 @@ def _experimental(args, bus):
         try:
             result = experimental.flash_all(bus.wire, confirm=lambda plan: _confirm_plan(args, plan),
                                             release=args.release, allow_untested=args.allow_untested,
-                                            records=records, on_progress=progress)
+                                            records=records, on_progress=progress, variant=args.variant)
         finally:
             for bar in bars.values():
                 bar.close()
@@ -642,6 +715,8 @@ def _dispatch(args, bus):
         return _status(args, bus)
     elif args.command == "set-baud":
         return _set_baud(args, bus)
+    elif args.command == "set-id":
+        return _set_id(args, bus)
     elif args.command == "calibrate":
         if args.reset:
             _reset_calibration(args, bus.calibration)
@@ -721,6 +796,8 @@ def _run(args, reset_calibration):
         else:
             if args.command == "install":
                 _confirm_install(args)                  # before the port opens: nothing is sent until confirmed
+            elif args.command == "set-id":
+                _confirm_set_id(args)
             elif args.command == "experimental" and args.experimental_command != "flash-all":
                 _confirm_experimental(args)             # flash-all asks after its census, with the plan
             if args.sim is not None:
@@ -734,7 +811,7 @@ def _run(args, reset_calibration):
             recovering = args.command == "recover"
             default_baud = LOADER_BAUD if recovering else APP_BAUD
             baud = args.baud if args.baud is not None else default_baud
-            calibration = None if args.command in ("calibrate", "status") else Calibration()
+            calibration = None if args.command in ("calibrate", "status", "set-id") else Calibration()
             # The loader may be waiting for its prompt, so skip the adapter's ping; OFF must not depend on it either.
             with Bus(args.port, baud=baud, calibration=calibration,
                      check_adapter=not (recovering or args.command == "off")) as bus:

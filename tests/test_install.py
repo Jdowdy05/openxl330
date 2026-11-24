@@ -22,7 +22,7 @@ from openxl330.wire import APP_BAUD, LOADER_BAUD, Loader
 RELEASE = Release(DEFAULT_RELEASE)
 PACK = RELEASE.packaged()
 DEVBLOCK = slice(0x4000 + registers.DEVCFG_OFFSET, 0x4000 + registers.DEVCFG_OFFSET + registers.DEVCFG_BYTES)
-RELEASE_ID = dict(number=16, variant="comp", abi=4, source_id="adbf24ee")
+RELEASE_ID = dict(RELEASE.release_id, source_id=f"{RELEASE.release_id['source_id']:08x}")   # as receipts record it
 
 
 # ---------------------------------------------------------------------------------------------- helpers

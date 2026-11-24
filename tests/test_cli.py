@@ -78,7 +78,6 @@ def test_simulation_and_port_are_mutually_exclusive(args, capsys):
     ("install", "--boot-baud", "2000000"),
     ("update", "--id", "1", "--new-id", "4"),
     ("recover", "--new-id", "4"),
-    ("set-id", "--id", "1", "--new-id", "4"),
 ])
 def test_rejects_obsolete_identity_options(run_cli, args):
     code, out, err = run_cli(*args)
@@ -147,13 +146,13 @@ def test_install_needs_the_stock_id(run_cli):
     assert code == 2 and not out and "--stock-id" in err
 
 
-def test_install_help_says_the_id_is_permanent(run_cli):
+def test_install_help_says_how_ids_are_set(run_cli):
     code, out, err = run_cli("install", "--help")
     assert code == 0 and not err
     text = " ".join(out.split())
-    assert ("The ID you set in Dynamixel Wizard before installing is permanent in v1; changing it after flashing is "
-            "not supported (except `openxl330 update --allow-id-change`, which moves a servo back to its stock NV "
-            "ID).") in text
+    assert ("Installing keeps the ID the servo has on its stock firmware, so set a unique ID in Dynamixel Wizard "
+            "first; afterwards change it over the bus with `openxl330 set-id` (Dynamixel Wizard cannot change the "
+            "ID of a servo running openxl330).") in text
     assert "no supported way back" in text and "about 30 s" in text
 
 
@@ -310,7 +309,7 @@ def test_no_stock_command_exists(run_cli):
     code, out, err = run_cli("--help")
     assert code == 0 and not err
     assert "install" in out and "recover" in out
-    assert all(command not in out for command in ("stock", "restore", "set-id"))
+    assert all(command not in out for command in ("stock", "restore"))
 
 
 @pytest.mark.parametrize("baud", [1_000_000, 3_000_000])
@@ -328,21 +327,21 @@ def test_status_flags_outdated(run_cli, monkeypatch, baud):
     assert "update available: openxl330 update --port SIM --id 1" in out
 
 
-def test_status_offers_fast16_update_for_fast15(run_cli, monkeypatch):
+def test_status_offers_the_bundled_update_for_fast15(run_cli, monkeypatch):
     previous, current = app_servo(1), app_servo(2)
     previous.release_id = dict(previous.release_id, number=15, abi=3, source_id=0xB3D14882)
     use_sim(monkeypatch, previous, current)
     code, out, err = run_cli("status", "--ids", "1,2", n=2)
     assert code == 0 and not err
     assert "FW231 release 15" in out
-    assert "fw231-comp2-fast16" in out
+    assert images.DEFAULT_RELEASE in out
     assert "update available: openxl330 update --port SIM --id 1" in out
     assert out.count("update available:") == 1
 
 
 def test_status_reports_discovery_only_for_unknown_abi(run_cli, monkeypatch):
     compatible, unknown = app_servo(1), app_servo(2)
-    unknown.release_id = dict(unknown.release_id, abi=5)
+    unknown.release_id = dict(unknown.release_id, abi=6)                       # newer than MAX_ABI (5)
     read = unknown.read
     attempted = []
 
@@ -356,7 +355,7 @@ def test_status_reports_discovery_only_for_unknown_abi(run_cli, monkeypatch):
     assert code == 0 and not err
     first, second = json.loads(out)
     assert first["id"] == 1 and first["supported"] and first["enabled"] is False
-    assert second["id"] == 2 and second["abi"] == 5 and not second["supported"]
+    assert second["id"] == 2 and second["abi"] == 6 and not second["supported"]
     assert second["enabled"] is None and second["faults"] is None
     assert attempted == [registers.MARKER, registers.BUSDIAG]
 
@@ -623,3 +622,21 @@ def test_module_entry_point(monkeypatch, capsys):
         runpy.run_module("openxl330", run_name="__main__")
     assert stopped.value.code == 0
     assert json.loads(capsys.readouterr().out)["default_release"] == images.DEFAULT_RELEASE
+
+
+def test_install_beta_flag_reaches_the_policy(run_cli, monkeypatch):
+    """--beta accepts a beta model (the XL330-M077), and the installer then picks its image."""
+    eeprom = default_eeprom(1)
+    eeprom[0:2] = (1190).to_bytes(2, "little")
+    factory = SimServo(1, eeprom=bytes(eeprom))
+    use_sim(monkeypatch, factory)
+    code, out, err = run_cli("install", "--stock-id", "1")
+    assert code == 1 and "--beta" in err and factory.mode == "stock"
+    code, out, err = run_cli("install", "--stock-id", "1", "--beta", "--json")
+    assert code == 0 and json.loads(out)["release"] == "fw231-comp2-fast17-m077" and factory.mode == "app"
+
+
+def test_update_beta_flag_is_recorded(run_cli):
+    code, out, err = run_cli("update", "--id", "1", "--beta", "--json")
+    assert code == 0, err
+    assert json.loads(out)["allow_beta"] is True

@@ -6,7 +6,7 @@ Installing openxl330 replaces the stock firmware of an **XL330-M288**. This inst
 
 1. Connect one servo. Use Dynamixel Wizard to give it a unique ID while it still runs the factory firmware. Record its ID, firmware version and baud rate. Close Wizard to release the adapter. [Dynamixel Wizard documentation](https://emanual.robotis.com/docs/en/software/dynamixel/dynamixel_wizard2/)
 
-   The ID you set in Dynamixel Wizard before installing is permanent in v1; changing it after flashing is not supported (except `openxl330 update --allow-id-change`, which moves a servo back to its stock NV ID). Factory servos all start at ID 1, so give each one its own ID before you install it.
+   Installing keeps the ID the servo has on its stock firmware, so set a unique ID in Dynamixel Wizard first; afterwards change it over the bus with `openxl330 set-id` (Dynamixel Wizard cannot change the ID of a servo running openxl330). Factory servos all start at ID 1, so give each one its own ID before you install it.
 2. Keep the other servos disconnected. Use stable power and leave the adapter and servo connected during the install. The installer supports model 1200 and has been used with stock V50/V52/V53 and loader v6. Reserve `--allow-untested` for an intentional bench test of another stock firmware version on this model.
 3. Discover the adapter with `openxl330 ports`, then install using the recorded stock ID and baud. This example uses ID 4 at 57,600 baud.
 
@@ -29,6 +29,15 @@ Installing openxl330 replaces the stock firmware of an **XL330-M288**. This inst
 
 `openxl330 experimental flash-all` installs on every stock servo of a bus in one run, each keeping its ID. `openxl330 experimental uninstall` and `uninstall-restore` put a servo back on stock firmware through Dynamixel Wizard's Firmware Recovery. Both are experimental. flash-all has installed a six-servo arm from stock; the route back to stock has been tested on a two-servo bench only: see [experimental commands](experimental.md) and [returning to stock firmware](returning-to-stock.md).
 
+## Performance and logging images
+
+Each model has two bundled images. The installer picks the one for the servo's model:
+
+- **performance** (the default): the controller and the bus features, including the ID change over the bus;
+- **logging** (`--variant logging`): adds the 2 kHz data-acquisition drain (register 1536) and extra diagnostic counters. It is meant for system identification and debugging. It has no room for the ID log, so `set-id` does not work on it, and installing it erases an ID set with `set-id` (`update` refuses that unless you pass `--allow-id-change`).
+
+`update` keeps the variant the servo runs unless you pass `--variant`.
+
 ## Update an installed servo
 
 Connect at 1 Mbaud, check the ID and release with `status`, and ensure the mechanism is safe to release. The status command shows an update hint for supported servos running an older release, such as fast13. Update one servo at a time.
@@ -38,6 +47,26 @@ openxl330 update --port /dev/ttyUSB0 --id 4
 ```
 
 The update uses the bundled image. If an older tool set a device-block ID override, updating would return the servo to its stock nonvolatile ID. The installer requires `--allow-id-change` for that case and checks for collisions. Any previous device-block label or start-up baud override is removed by the bundled image.
+
+## Change an ID after installing
+
+Servos running an openxl330 release 17 performance image can change their ID over the bus. The logging images have no room for the ID log, so they cannot. The servo must be OFF, and the new ID free:
+
+```sh
+openxl330 set-id --port PORT --id 2 --new-id 6
+```
+
+It asks `This changes ID 2 to ID 6; the servo keeps the new ID after power-off. Continue? [y/N]`. Without a terminal, pass `--yes`. The change is recorded like an install, and the receipt path is printed. The host calibration entry moves to the new ID. Older releases cannot do this: update them first. See [changing an ID](api.md#changing-an-id).
+
+An update keeps an ID set this way when the new release has an ID log (release 17+), putting it back if the install erased the log. Updating to an older release would move the servo to its stock ID, so it needs `--allow-id-change`.
+
+During the update the servo answers at its stock ID until the ID is put back, so that ID must be free. Factory servos all start at ID 1: after giving several of them IDs with set-id, update them one at a time, alone on the bus or with the other ID-1 servos disconnected.
+
+If the reply to a set-id is lost, the error names both IDs. Find the servo with `openxl330 scan`, then run the same `set-id` command again. When the run's receipt proves the servo now at the new ID is the same servo (its calibration fingerprint), the re-run moves the host calibration entry and changes nothing on the servo.
+
+## The XL330-M077 (beta)
+
+The XL330-M077 is supported only as a beta, because its constants are scaled from the XL330-M288's and not yet measured: see [servo models](models.md). Installing on one needs `--beta`; the installer then picks the XL330-M077 image. It has not run on an XL330-M077 yet.
 
 ## Recover an interrupted installation
 

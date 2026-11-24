@@ -19,7 +19,27 @@ from openxl330 import errors, images
 from openxl330._protocol import framing, packets
 from openxl330.registers import DEVCFG_BYTES, DEVCFG_OFFSET, encode_release_id, parse_devcfg
 
-NAMES = ("fw231-comp2-fast16",)
+NAMES = ("fw231-comp2-fast17", "fw231-comp2-fast17-log", "fw231-comp2-fast17-m077", "fw231-comp2-fast17-m077-log")
+SOURCE_ID = 0x77E22D48
+# name: (raw bytes, raw sha256, upload bytes, upload sha256, padded sha256, upload CRC-16, variant, model, kind)
+PINS = {
+    "fw231-comp2-fast17": (38896, "65e34ddce379c43fd263f1fc47942100ee56d17907569f476baede144c5d1834", 38896,
+                           "cf08a04223e54e9edb264e6153da32343f15d4615668e80c5471cb65aa755ed2",
+                           "65e34ddce379c43fd263f1fc47942100ee56d17907569f476baede144c5d1834", 0xD9B8, "comp", 1200,
+                           "performance"),
+    "fw231-comp2-fast17-log": (39220, "541a259b645fc8a1765eec4fd68b149a5b3608990e88454224035f19a12d9fd0", 39224,
+                               "b85ab147b6f2dc794a2cc168bca9f8cbe803881f50be06969b80786f7ce56d99",
+                               "48da30c32efa983a9688d4c91713b3cb21e2a52b55010558aee7f7095262bfe9", 0xBFF5, "comp-log",
+                               1200, "logging"),
+    "fw231-comp2-fast17-m077": (38884, "f889fa18f2b097bf135a2dafa1677e0b00021a67f2b79a5fa28f58c8bc228c17", 38888,
+                                "57c1772259f8bbccd2d7d0a6f6ecc38446eefd3774229b0ab1ebb6520aa3c082",
+                                "05f554a0836ee37d0462ec8ff4dd8652d48684735a93cef00c8005aa8b676669", 0x608D, "comp-m077",
+                                1190, "performance"),
+    "fw231-comp2-fast17-m077-log": (39212, "b34964b96d19b9ea37884cb32e66bba5c83252c1f2f938e5de07b194dbac5aa1", 39216,
+                                    "2965a3d3d6dd1253076442afefcfa7f6821e32122aaa847b7e1c065c53301ce8",
+                                    "89897c3a9778c32fc7fd8e03a767b367043e78e258be6f24a8b7811ea253500b", 0x7A86,
+                                    "comp-m077-log", 1190, "logging"),
+}
 ROOT = Path(__file__).resolve().parent.parent
 IMAGES = ROOT / "src" / "openxl330" / "images"
 
@@ -39,7 +59,7 @@ def _copy_release(name, tmp_path):
 
 
 def test_constants():
-    assert images.DEFAULT_RELEASE == "fw231-comp2-fast16"
+    assert images.DEFAULT_RELEASE == "fw231-comp2-fast17"
     assert not hasattr(images, "RELEASE_IDS"), "the release ID comes from the manifest only"
     assert images.RELEASES == NAMES
     assert images.release_names() == list(NAMES)
@@ -74,20 +94,19 @@ def test_release_encoded_matches_manifest(name):
     assert len(release.encoded) == len(padded), "the upload transform is length-preserving"
 
 
-def test_fast16_pins_release_id_and_known_loaders():
-    m = _manifest("fw231-comp2-fast16")
-    assert (m["raw_bytes"], m["raw_sha256"]) == (
-        40948, "c012a5ec2865f5a27b60345a0517adfbc82e4f417e99d49d97a76a7152ba1413")
-    assert (m["encoded_bytes"], m["encoded_sha256"]) == (
-        40952, "42f23953b9ea0c398d4686a10d9726841a9007718b0a0568867e108d158179d8")
-    assert (m["padded_program_bytes"], m["padded_program_sha256"]) == (
-        40952, "4aadb09ec9681e75c5760ed04e446f13c9a5c393632c975712e6670d238a8101")
-    assert m["source_tree_sha256"].startswith("adbf24ee")
-    release = images.Release("fw231-comp2-fast16")
-    assert release.packaged().crc16 == 0xE76F
+@pytest.mark.parametrize("name", NAMES)
+def test_fast17_pins_release_id_and_known_loaders(name):
+    raw_bytes, raw_sha, enc_bytes, enc_sha, padded_sha, crc, variant, model, kind = PINS[name]
+    m = _manifest(name)
+    assert (m["raw_bytes"], m["raw_sha256"]) == (raw_bytes, raw_sha)
+    assert (m["encoded_bytes"], m["encoded_sha256"]) == (enc_bytes, enc_sha)
+    assert (m["padded_program_bytes"], m["padded_program_sha256"]) == (enc_bytes, padded_sha)
+    assert int(m["source_tree_sha256"][:8], 16) == SOURCE_ID
+    release = images.Release(name)
+    assert release.packaged().crc16 == crc
     rid = release.release_id
-    assert rid == dict(number=16, variant="comp", abi=4, source_id=0xADBF24EE)
-    assert (m["release_number"], m["abi"]) == (16, 4)
+    assert rid == dict(number=17, variant=variant, abi=5, source_id=SOURCE_ID)
+    assert (m["release_number"], m["abi"], release.model, release.kind) == (17, 5, model, kind)
     assert encode_release_id(**rid)[:8] in release.raw, "the program carries the words read 1120 reports"
     assert m["known_loaders"] == {"b6934188": "retained ROBOTIS loader v6"}
     assert release.known_loaders == {0xB6934188: "retained ROBOTIS loader v6"}

@@ -30,7 +30,7 @@ def armed(sims, calibration=None):
 
 
 def test_the_bundled_release_has_the_torque_command():
-    assert RELEASE.release_id["number"] >= 16 and RELEASE.release_id["abi"] == 4
+    assert RELEASE.release_id["number"] >= 16 and RELEASE.release_id["abi"] >= 4
     bus, _ = armed(servos(1))
     assert "torque_command" in bus.servo_info(1).features
 

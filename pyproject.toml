@@ -37,6 +37,8 @@ Changelog = "https://github.com/Jdowdy05/openxl330/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "build", "hatchling>=1.27"]
+# openxl330.compat.lerobot: LeRobot 0.7+ with its rustypot motor definitions (openxl330.compat itself needs nothing).
+lerobot = ["lerobot[serial-motors]>=0.7,<0.8"]
 
 [project.scripts]
 openxl330 = "openxl330.cli:main"

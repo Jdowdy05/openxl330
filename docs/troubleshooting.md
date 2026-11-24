@@ -52,14 +52,21 @@ The Python fault list names known bits and reports any other bit as `bit N`. The
 | 1 | `sensor` | Check the encoder, sensing, bridge and hardware fault readings. Review the first-trip record and sample budget if the fault repeats. |
 | 2 | `timeout` | Check last-reset information for a controller or main-loop stall. Check lease status separately if a requested command lease has expired. |
 | 4 | `current` | Check for a stall, obstruction or sustained load that exceeds the configured RMS current limit (1.0 A by default; see [protections](api.md#protections)). Clearing keeps the I²t state, so wait about 2 s or reduce the load before arming again. |
-| 8 | `voltage` | The supply left 3.5–7.0 V (default upper limit). Check the supply under load, connectors, ground and regenerative rise during braking. |
+| 8 | `voltage` | The supply left 3.5–8.0 V (default upper limit; above 7.0 V is only a warning). Check the supply under load, connectors, ground and regenerative rise during braking. |
 | 16 | `temperature` | The servo reached 65 °C (default limit). Let it cool and reduce sustained mechanical load. |
 | 32 | `timing` | Check the deadline counters and worst tick time. Record whether the fault coincided with bus traffic. |
 | 64 | `config` | Check controller configuration and target values against the release and register map. |
 | 128 | `travel` | Travel fault on firmware that implements this check. Check mechanical travel and joint coordinates. |
 | 256 | `speed` | Speed fault on firmware that implements this check. Check motion rate, load and joint coordinates. |
-| 512 | `daq` | Data-acquisition fault on firmware that reports it. Check the sample queue, readout rate and drops. |
+| 512 | `daq` | Data-acquisition fault on the logging images, which have the sample queue. Check the queue, readout rate and drops. |
 | 1024 | `energy` | The controller reached a terminal condition. Check firmware release, controller status and the first-trip record before re-arming. |
+
+Warnings are not faults: torque stays on and nothing latches. `status().warnings` (the CLI `status` Warnings column) shows:
+
+- `supply_high` while the supply is above 7.0 V. It clears at or below 6.8 V.
+- `voltage_protection_off` when the upper-voltage protection was switched off with `servo.voltage_protection = False`.
+
+See [the upper-voltage protection switch](api.md#upper-voltage-protection-switch-release-17).
 
 ## Installation and recovery
 

@@ -139,6 +139,26 @@ class Calibration:
                 self._save(self.path, joints)
             self._joints = joints
 
+    def has(self, servo_id: int) -> bool:
+        """Whether this servo has its own entry (not the defaults)."""
+        return _check_servo_id(servo_id) in self._joints
+
+    def move(self, old: int, new: int) -> None:
+        """Move servo `old`'s entry to `new` (after its ID changed), saved to the file when there is one. `new` must
+        have no entry of its own (CalibrationError)."""
+        _check_servo_id(old)
+        _check_servo_id(new)
+        with self._lock:
+            if new in self._joints:
+                raise CalibrationError(f"ID {new} already has a calibration entry: reset it first "
+                                       f"(`openxl330 calibrate --id {new} --reset`)")
+            joints = self._joints.copy()
+            if old in joints:
+                joints[new] = joints.pop(old)
+            if self.path is not None:
+                self._save(self.path, joints)
+            self._joints = joints
+
     def reset(self, servo_id: Optional[int] = None) -> None:
         with self._lock:
             if servo_id is None:

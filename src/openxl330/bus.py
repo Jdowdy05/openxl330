@@ -20,21 +20,20 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import adapters, images
+from . import adapters, images, models
 from .calibration import Calibration
 from .errors import (PROTOCOL_ERRORS, AdapterError, AdapterWarning, Error, InvalidArgument, NoReply, NoServosFound,
                      PortBusy, Refused, Rejected, UnsupportedServo)
 from .group import Group
 from .install import update_command
-from .registers import (BAUD, BUSDIAG, DEVBLOCK, FW231_MARKER, LAST_RESET, MARKER, MIN_ABI, RELEASE_ID,
+from .registers import (BAUD, BUSDIAG, SET_ID, DEVBLOCK, FW231_MARKER, LAST_RESET, MARKER, MIN_ABI, RELEASE_ID,
                         decode_release_id, parse_devcfg)
 from .servo import Servo, ids_text
 from .wire import APP_BAUD, SYNC_WRITE_SETTLE_S, Wire, WireLog
 
-MAX_ABI = 4                                     # the newest register map this version knows
+MAX_ABI = 5                                     # the newest register map this version knows
 FW231 = 231
-SUPPORTED_MODEL = 1200
-MODEL_NAMES = {1200: 'XL330-M288', 1190: 'XL330-M077', 1060: 'XL430-W250'}
+MODEL_NAMES = {**{m.number: m.name for m in models.MODELS.values()}, 1060: 'XL430-W250'}
 BUS_BAUDS = (1_000_000, 2_000_000, 3_000_000)   # what set_baud() can switch FW231 servos to
 # scan(all_bauds=True), current baud first. Not 9600: a ping reply there outlasts the 3 ms ID slot, so replies collide.
 SCAN_BAUDS = (1_000_000, 2_000_000, 3_000_000, 57_600, 115_200)
@@ -46,10 +45,11 @@ PORT_TIMEOUT = 0.002
 class ServoInfo:
     """What a servo is. model: 'XL330-M288' (or 'model N'); firmware: 'FW231', 'stock V52' or 'unknown'; supported:
     usable through servo()/group(); features: any of 'motion', 'fast_sync_read', 'last_reset', 'release_id',
-    'torque_command' (release 16+ / ABI 4: Servo.set_torque); release:
+    'torque_command' (release 16+ / ABI 4: Servo.set_torque), 'set_id' (release 17+ with ABI 5: Servo.set_id); release:
     a bundled release's name, 'FW231 release N', 'FW231 (release 11)', 'FW231 (release 10 or older)', or None
     (not FW231); label: the device-block label an earlier tool may have written (normally ''); baud: where it
-    answered. abi: reported register-map version when the openxl330 marker and ABI header were readable."""
+    answered. abi: reported register-map version when the openxl330 marker and ABI header were readable. beta: a model
+    openxl330 supports only as a beta (the XL330-M077, see openxl330.models)."""
     id: int
     model: str
     firmware: str
@@ -59,6 +59,7 @@ class ServoInfo:
     label: str = ''
     baud: int = APP_BAUD
     abi: int | None = None
+    beta: bool = False
 
 
 def _baud_text(bps):
@@ -69,6 +70,23 @@ def _model_name(model):
     if model is None:
         return 'unknown'
     return MODEL_NAMES.get(model, f'model {model}')
+
+
+def _model_mismatch(servo_id, spec, rid):
+    """Why a FW231 image may not drive this model (None when it may): each variant is built for one model
+    (models.for_variant), and a variant this version does not know is refused, not assumed to be either. The images'
+    torque constants differ by the gear ratio (about 3.7x), and an M288 compensation over-compensates an M077."""
+    built = models.for_variant(rid['variant'])
+    if built is None:
+        return (f"ID {servo_id} runs a firmware variant this openxl330 does not know ({rid['variant']}): upgrade "
+                f'openxl330 (pip install --upgrade openxl330) before commanding it')
+    if built is spec:
+        return None
+    if spec is models.M077:
+        return (f"ID {servo_id} is an XL330-M077 running an image built for the XL330-M288 (variant {rid['variant']}): "
+                f'its torque constants are about 3.7x off. Install the XL330-M077 beta image before commanding it')
+    return (f"ID {servo_id} runs the {rid['variant']} image (built for the {built.name}) but reports an {spec.name}: "
+            f'install the {spec.name} release (openxl330 update --id {servo_id}) before commanding it')
 
 
 def _check_id(servo_id):
@@ -155,6 +173,7 @@ class Bus:
         self.port = _open_serial(port, baud) if opened else port
         self._opened, self._probed, self._wire, self._own_log = opened, {}, None, log is True
         self._identity_generation = 0
+        self._moved = {}                 # ID -> (identity generation, why): handles born before it refuse (set_id)
         try:
             clock = getattr(self.port, 'clock', None)
             if callable(clock) and callable(getattr(clock, 'sleep', None)):
@@ -315,13 +334,16 @@ class Bus:
             info = ServoInfo(servo_id, model, f'stock V{fw}' if stock else 'unknown', False, baud=baud)
             what = f'stock firmware V{fw}' if stock else f'firmware version {fw}, not openxl330 firmware'
             advice = ('put stock servos on a separate adapter, or install with `openxl330 install`'
-                      if model_no == SUPPORTED_MODEL else
-                      'put it on a separate adapter (openxl330 firmware runs on the XL330-M288 only)')
+                      if models.by_number(model_no) is not None else
+                      'put it on a separate adapter (openxl330 firmware runs on the XL330-M288, and as a beta on the '
+                      'XL330-M077)')
             return info, (f'ID {servo_id} runs {what} ({model}): v1 supports buses where every servo runs openxl330 '
                           f'firmware; {advice}')
-        if model_no != SUPPORTED_MODEL:
+        spec = models.by_number(model_no)
+        if spec is None:
             return (ServoInfo(servo_id, model, 'FW231', False, baud=baud),
-                    f'ID {servo_id} reports FW231 on {model}, but openxl330 supports the XL330-M288 only')
+                    f'ID {servo_id} reports FW231 on {model}, but openxl330 supports the XL330-M288 (and, as a beta, '
+                    f'the XL330-M077) only')
         marker = self._optional(servo_id, MARKER)
         if marker is None or not marker.startswith(FW231_MARKER):
             return (ServoInfo(servo_id, model, 'unknown', False, baud=baud),
@@ -350,19 +372,28 @@ class Bus:
                 return (ServoInfo(servo_id, model, 'FW231', False, baud=baud, abi=abi),
                         f"ID {servo_id} ABI fields disagree (bus diagnostics {abi}, release ID {rid['abi']}). "
                         f'Check the running firmware before commanding this servo')
+            mismatch = _model_mismatch(servo_id, spec, rid)
+            if mismatch:
+                return ServoInfo(servo_id, model, 'FW231', False, baud=baud, abi=abi), mismatch
             features.add('release_id')
             if rid['number'] >= 11:
                 features.add('last_reset')
             if rid['number'] >= 16 or abi >= 4:
                 features.add('torque_command')
+            if rid['number'] >= 17 and abi >= 5 and self._optional(servo_id, SET_ID) is not None:
+                features.add('set_id')                   # logging builds report ABI 5 without the ID log
             release = _release_name(rid)
         elif self._optional(servo_id, LAST_RESET) is not None:
             features.add('last_reset')
             release = 'FW231 (release 11)'
         else:
             release = 'FW231 (release 10 or older)'
+        if rid is None and spec is not models.M288:
+            return (ServoInfo(servo_id, model, 'FW231', False, baud=baud, abi=abi),
+                    f'ID {servo_id} is an {spec.name} running a FW231 image without a release ID: only the '
+                    f'{spec.name} image may drive it. Install it before commanding this servo')
         label = parse_devcfg(self._optional(servo_id, DEVBLOCK) or b'')['label']
-        return ServoInfo(servo_id, model, 'FW231', True, frozenset(features), release, label, baud, abi), None
+        return ServoInfo(servo_id, model, 'FW231', True, frozenset(features), release, label, baud, abi, spec.beta), None
 
     def _probe(self, servo_id):
         """(ServoInfo, refusal) for one ID at the current baud, probed once per Bus (scan() fills the same cache)."""

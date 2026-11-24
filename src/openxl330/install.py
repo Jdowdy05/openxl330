@@ -7,8 +7,9 @@ Opens no port: every function takes a Wire on a port the caller opened.
 
 Every servo gets the same pre-encoded image (images.Release.packaged), so nothing is personalised: the firmware
 answers at the ID the servo had on its stock firmware (its NV journal ID) and starts at 1 Mbaud. Give each servo a
-unique ID in ROBOTIS Dynamixel Wizard, on its stock firmware, BEFORE its first install; this version of openxl330
-does not change IDs (from_stock refuses an ID that another servo on the bus already uses).
+unique ID in ROBOTIS Dynamixel Wizard, on its stock firmware, BEFORE its first install; an install
+does not change IDs (from_stock refuses an ID that another servo on the bus already uses); set_id() does, on
+release 17 and later (register 1144), as a recorded run of its own.
 
 Invariants:
   * only the program region 0x08004000..0x0800DFFF is ever written (the bundled upload fits it, Loader.upload
@@ -75,17 +76,18 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
-from . import images, paths
-from .errors import (BusUncertain, Error, InstallError, InvalidArgument, NoReply, Rejected, UnsupportedServo,
-                     UntestedServo)
+from . import images, models, paths
+from .errors import (BusUncertain, Error, InstallError, InvalidArgument, NoReply, NotSupported, Refused, Rejected,
+                     UnsupportedServo, UntestedServo)
 from .images import DEFAULT_RELEASE, PROGRAM_BASE, Release
-from .registers import (BAUD, BUSDIAG, DEVBLOCK, FW231_MARKER, LOADER_DIGEST, MARKER, RELEASE_ID, STATUS,
-                        TORQUE_ENABLE, decode_busdiag, decode_release_id, decode_status, parse_devcfg)
+from .registers import (BAUD, BUSDIAG, DEVBLOCK, FW231_MARKER, LOADER_DIGEST, MARKER, RELEASE_ID, SET_ID,
+                        SET_ID_QUIET_S, SET_ID_REPLY_S, STATUS, TORQUE_ENABLE, decode_busdiag, decode_id_log, decode_release_id,
+                        decode_status, encode_set_id, parse_devcfg)
 from .wire import APP_BAUD, LOADER_BAUD, Loader, WireLog
 
 # ---------------------------------------------------------------- policy tables (one place; releases extend them)
-SUPPORTED_MODEL = 1200                              # XL330-M288
-PROVEN_STOCK = {(1200, 50), (1200, 52), (1200, 53)}  # (model, stock firmware version) proven by a first install
+SUPPORTED_MODEL = models.M288.number               # XL330-M288: the only model a stock bystander may be
+PROVEN_STOCK = {(m.number, v) for m in models.MODELS.values() for v in m.proven_stock}   # proven by a first install
 
 SCHEMA = 'xlbus-install-v1'
 FW231 = 231
@@ -114,7 +116,7 @@ _STEPS = {
     'records': 'writing the records', 'receipt': "reading the failed run's receipt",
     'loader_digest': 'reading the loader digest', 'bystanders': 'checking the other stock servos',
     'plan': 'planning the installs', 'handoff': 'handing the servo to the retained loader',
-    'restore': 'restoring the stock settings',
+    'restore': 'restoring the stock settings', 'set_id': 'changing the ID', 'reapply_id': 're-applying the ID',
 }
 ISSUES_URL = 'https://github.com/Jdowdy05/openxl330/issues'   # where users share receipts (no personal contact)
 _IN_LOADER = ' The servo may still be waiting in the retained loader.'
@@ -659,17 +661,29 @@ def _proven_versions(model):
     return ', '.join(f'V{v}' for m, v in sorted(PROVEN_STOCK) if m == model)
 
 
-def _stock_policy(stock_id, ident, allow_untested):
-    """The untested-servo policy (before F9). Returns None for a proven servo, else why it is untested."""
+def _image_for(servo_id, spec, release):
+    """UnsupportedServo unless `release` is built for this model (before F9)."""
+    built = models.by_number(release.model)
+    if built is not spec:
+        raise UnsupportedServo(f'ID {servo_id} is an {spec.name}, but {release.name} is built for the {built.name}: '
+                               f'leave the release out to install the {spec.name} image '
+                               f'({images.release_for(spec.number)}). Nothing was installed')
+
+
+def _stock_policy(stock_id, ident, allow_untested, allow_beta=False, release=None):
+    """The model and untested-servo policy (before F9). Returns None for a proven servo, else why it is untested. A
+    beta model (allow_beta) counts as untested whatever its stock version: no stock version of it is proven."""
     model, version = ident['model'], ident['firmware']
-    if model != SUPPORTED_MODEL:
-        raise UnsupportedServo(f'ID {stock_id} is model {model}, not an XL330-M288 (model {SUPPORTED_MODEL}): this '
-                               f'firmware runs only on the XL330-M288. Nothing was installed')
+    spec = models.require(model, allow_beta=allow_beta, what=f'ID {stock_id}')
     if version == FW231:
         raise InstallError(f'ID {stock_id} already runs FW231: use update() (CLI: openxl330 update --id {stock_id}) '
                            f'instead. Nothing was installed', step='identify')
+    if release is not None:
+        _image_for(stock_id, spec, release)
     if (model, version) in PROVEN_STOCK:
         return None
+    if spec.beta:
+        return f'{spec.name} is a beta model: no stock firmware of it is proven (this one runs V{version})'
     why = f'stock firmware V{version} is not proven (proven: {_proven_versions(model)})'
     if not allow_untested:
         raise UntestedServo(f'ID {stock_id} runs stock firmware V{version}, and installing over it has not been '
@@ -721,9 +735,9 @@ def _verify_installed(wire, run, pack, servo_id, release, loader_before=None, nv
     run.at = 'verify'
     ident = _wait_boot(wire, servo_id)
     run.step('launched', ping=ident)
-    if ident['model'] != SUPPORTED_MODEL or ident['firmware'] != release.version:
+    if ident['model'] != release.model or ident['firmware'] != release.version:
         raise InstallError(f'ID {servo_id} answers as model {ident["model"]} firmware {ident["firmware"]}, '
-                           f'expected model {SUPPORTED_MODEL} firmware {release.version}', step='verify')
+                           f'expected model {release.model} firmware {release.version}', step='verify')
     marker = wire.read(servo_id, *MARKER).rstrip(b'\0').decode('ascii', 'replace')
     if marker != release.marker:
         raise InstallError(f'wrong firmware marker {marker!r} (expected {release.marker!r})', step='verify')
@@ -787,8 +801,9 @@ def _require_off(servo_id, enabled, step):
 
 
 # ---------------------------------------------------------------- public: first install from stock
-def from_stock(wire, *, stock_id: int = 1, stock_baud: int = 57_600, release: str | Release = DEFAULT_RELEASE,
-               allow_untested: bool = False, records: Path | None = None, on_progress=None) -> dict:
+def from_stock(wire, *, stock_id: int = 1, stock_baud: int = 57_600, release: str | Release | None = None,
+               allow_untested: bool = False, records: Path | None = None, on_progress=None,
+               allow_beta: bool = False, variant: str | None = None) -> dict:
     """First install on a factory servo still running ROBOTIS firmware, at `stock_id` / `stock_baud`. Returns the
     receipt.
 
@@ -796,34 +811,66 @@ def from_stock(wire, *, stock_id: int = 1, stock_baud: int = 57_600, release: st
     Wizard first (each servo its own); the bus is censused at 57600, 1M, 2M and 3M before F9, and an ID another servo
     already uses there is refused. At its baud the servo must be the only one that is not FW231, and nothing else may
     answer at 57600 (the loader session runs there); FW231 servos may stay on the bus. The servo must be an XL330-M288
-    (model 1200, else UnsupportedServo, always) with a proven stock firmware (PROVEN_STOCK, else UntestedServo unless
-    allow_untested=True, which the receipt records). Its stock EEPROM is read before and compared after (FW231 reports
+    (model 1200) with a proven stock firmware (PROVEN_STOCK, else UntestedServo unless allow_untested=True, which the
+    receipt records), or, with allow_beta=True, a beta model (the XL330-M077, openxl330.models; its stock firmware
+    counts as untested; recorded); anything else is UnsupportedServo before F9. The image: `release` when given (it must
+    be built for the servo's model), else the bundled one for the servo's model and `variant` ('performance', the
+    default, or 'logging': images.release_for). Its stock EEPROM is read before and compared after (FW231 reports
     the same NV journal bytes). Stock firmware cannot read flash, so its loader digest and calibration become the
     first records after the launch. on_progress(done_bytes, total_bytes) after every upload packet."""
     _check_id(stock_id, 'stock_id')
     _check_bool(allow_untested, 'allow_untested')
+    _check_bool(allow_beta, 'allow_beta')
+    _check_variant(variant, release)
     _check_progress(on_progress)
     if type(stock_baud) is not int or stock_baud not in STOCK_BAUDS:
         raise InvalidArgument(f'stock_baud {stock_baud!r}: use one of {", ".join(map(str, STOCK_BAUDS))} '
                               f'(nothing was sent)')
     return _install_stock(wire, stock_id=stock_id, stock_baud=stock_baud, release=release,
-                          allow_untested=allow_untested, records=records, on_progress=on_progress)
+                          allow_untested=allow_untested, records=records, on_progress=on_progress, allow_beta=allow_beta,
+                          variant=variant)
 
 
-def _install_stock(wire, *, stock_id, stock_baud, release, allow_untested, records, on_progress, bystanders=False):
+def _bundle_or_given(release):
+    """The given Release, or None after checking that every bundled release loads: before anything is sent, a broken
+    local bundle blocks the install even when the image is chosen only after the census."""
+    if release is not None:
+        return _release(release)
+    for name in images.RELEASES:
+        _release(name).packaged()
+    return None
+
+
+def _check_variant(variant, release):
+    if variant is not None and variant not in images.VARIANTS:
+        raise InvalidArgument(f'variant {variant!r}: use one of {", ".join(images.VARIANTS)} (nothing was sent)')
+    if variant is not None and release is not None and _release(release).kind != variant:
+        raise InvalidArgument(f'release {_release(release).name} is a {_release(release).kind} image, not {variant}: '
+                              f'give one or the other (nothing was sent)')
+
+
+def _choose(release, model, variant, what, allow_beta):
+    """(Release, packaged) for a servo of `model`: the given release, else the bundled one for its model and variant."""
+    if release is None:
+        spec = models.require(model, allow_beta=allow_beta, what=what)
+        release = _release(images.release_for(spec.number, variant or 'performance'))
+    return release, release.packaged()
+
+
+def _install_stock(wire, *, stock_id, stock_baud, release, allow_untested, records, on_progress, bystanders=False,
+                   allow_beta=False, variant=None):
     """from_stock(); bystanders=True is the experimental flash-all's rule (openxl330.experimental): other stock
     XL330-M288 servos with their own IDs may stay on the bus, at the target's baud and at 57600 too (at 57600 only a
     version in PROVEN_BYSTANDERS, unless allow_untested). The census also covers 115200. Each stock bystander's control
     table 0..119 is read before F9 and again after the launch: EEPROM 0..63 and torque enable 64 must be unchanged
     (receipt['bystanders']); other RAM differences are warnings."""
-    release = _release(release)
-    pack = release.packaged()
+    release = _bundle_or_given(release)
     _bus_clean(wire)
     run = _start(records, f'first-install-id{stock_id}', stock_id)
     if bystanders:
         run.receipt['experimental_bystanders'] = True
-    return _execute(wire, run, lambda: _from_stock(wire, run, release, pack, stock_id, stock_baud, allow_untested,
-                                                   on_progress, bystanders))
+    return _execute(wire, run, lambda: _from_stock(wire, run, release, None, stock_id, stock_baud, allow_untested,
+                                                   on_progress, bystanders, allow_beta, variant))
 
 
 def _census_rule(census, stock_id, stock_baud, bystanders, allow_untested=False):
@@ -905,7 +952,8 @@ def _check_bystanders(wire, snapshots):
     return out, warnings
 
 
-def _from_stock(wire, run, release, pack, stock_id, stock_baud, allow_untested, on_progress, bystanders=False):
+def _from_stock(wire, run, release, pack, stock_id, stock_baud, allow_untested, on_progress, bystanders=False,
+                allow_beta=False, variant=None):
     census_bauds = BYSTANDER_CENSUS_BAUDS if bystanders else CENSUS_BAUDS
     run.at = 'census'
     wire.set_baud(stock_baud)
@@ -925,8 +973,11 @@ def _from_stock(wire, run, release, pack, stock_id, stock_baud, allow_untested, 
         _refuse_error_replies(census, stock_baud, 'census')
     run.at = 'identify'
     ident = census[stock_id]
-    run.receipt.update(model=ident['model'], stock_firmware=ident['firmware'], allow_untested=allow_untested)
-    untested = _stock_policy(stock_id, ident, allow_untested)
+    run.receipt.update(model=ident['model'], stock_firmware=ident['firmware'], allow_untested=allow_untested,
+                       allow_beta=allow_beta)
+    release, pack = _choose(release, ident['model'], variant, f'ID {stock_id}', allow_beta)
+    run.receipt['variant'] = release.kind
+    untested = _stock_policy(stock_id, ident, allow_untested, allow_beta, release)
     run.receipt['untested'] = untested
     run.at = 'census_other_bauds'
     censuses = _census_bauds(wire, [b for b in census_bauds if b != stock_baud], stock_baud)
@@ -984,8 +1035,8 @@ def _from_stock(wire, run, release, pack, stock_id, stock_baud, allow_untested, 
 
 
 # ---------------------------------------------------------------- public: update a servo already on FW231
-def update(wire, *, servo_id: int, release: str | Release = DEFAULT_RELEASE, allow_id_change: bool = False,
-           records: Path | None = None, on_progress=None) -> dict:
+def update(wire, *, servo_id: int, release: str | Release | None = None, allow_id_change: bool = False,
+           records: Path | None = None, on_progress=None, allow_beta: bool = False, variant: str | None = None) -> dict:
     """(Re)install the bundled image on a servo already running FW231, on a shared bus at 1 Mbaud. Returns the receipt.
 
     The servo keeps its ID. Its device block becomes the image's default one: a label or start-up baud an earlier
@@ -995,23 +1046,37 @@ def update(wire, *, servo_id: int, release: str | Release = DEFAULT_RELEASE, all
     any recovery command then use it). Every other servo on the bus
     stays in its application; FW231 bystanders hear the 57600 loader traffic as line noise and count it. Before F9 the
     bus is also censused at 57600 (nothing may answer there) and at 2M and 3M (an ID found there is taken). The
-    loader's CRC-32 and the calibration are read before F9 and must be unchanged after."""
+    loader's CRC-32 and the calibration are read before F9 and must be unchanged after. A servo of a beta model (the
+    XL330-M077) is updated only with allow_beta=True and only to an image built for its model. The image: `release`
+    when given, else the bundled one for the servo's model and `variant`, which defaults to the variant it runs now
+    (performance or logging)."""
     _check_id(servo_id, 'servo_id')
     _check_bool(allow_id_change, 'allow_id_change')
+    _check_bool(allow_beta, 'allow_beta')
+    _check_variant(variant, release)
     _check_progress(on_progress)
-    release = _release(release)
-    pack = release.packaged()
+    release = _bundle_or_given(release)
     _bus_clean(wire)
     if wire.port.baudrate != APP_BAUD:
         raise InstallError(f'the host is at {wire.port.baudrate} baud: update needs the bus at 1 Mbaud (switch every '
                            f'servo back to 1 Mbaud, or power-cycle them and connect within 1.5 s). Nothing was sent',
                            step='precheck')
     run = _start(records, f'update-id{servo_id}', servo_id)
-    run.receipt['allow_id_change'] = allow_id_change
-    return _execute(wire, run, lambda: _update(wire, run, release, pack, servo_id, allow_id_change, on_progress))
+    run.receipt.update(allow_id_change=allow_id_change, allow_beta=allow_beta)
+    return _execute(wire, run, lambda: _update(wire, run, release, None, servo_id, allow_id_change, on_progress,
+                                               allow_beta, variant))
 
 
-def _update(wire, run, release, pack, servo_id, allow_id_change, on_progress):
+def _running_variant(wire, servo_id):
+    """'logging' when the servo runs a logging image (its release-ID variant ends in -log), else 'performance'."""
+    try:
+        return 'logging' if decode_release_id(wire.read(servo_id, *RELEASE_ID))['variant'].endswith('-log') \
+            else 'performance'
+    except Rejected:
+        return 'performance'
+
+
+def _update(wire, run, release, pack, servo_id, allow_id_change, on_progress, allow_beta=False, variant=None):
     run.at = 'census'
     census = wire.scan(252)
     run.step('census', census=census)
@@ -1022,9 +1087,12 @@ def _update(wire, run, release, pack, servo_id, allow_id_change, on_progress):
     _refuse_error_replies(census, APP_BAUD, 'census')
     run.at = 'identify'
     ident = census[servo_id]
-    if ident['model'] != SUPPORTED_MODEL:
-        raise UnsupportedServo(f'ID {servo_id} is model {ident["model"]}, not an XL330-M288 (model '
-                               f'{SUPPORTED_MODEL}). Nothing was installed')
+    spec = models.require(ident['model'], allow_beta=allow_beta, what=f'ID {servo_id}')
+    if release is None and variant is None and ident['firmware'] == FW231:
+        variant = _running_variant(wire, servo_id)
+    release, pack = _choose(release, spec.number, variant, f'ID {servo_id}', allow_beta)
+    run.receipt['variant'] = release.kind
+    _image_for(servo_id, spec, release)
     if ident['firmware'] != FW231:
         raise InstallError(f'ID {servo_id} runs ROBOTIS firmware V{ident["firmware"]}, not FW231: install it with '
                            f'from_stock() (CLI: openxl330 install) instead. Nothing was installed', step='identify')
@@ -1036,30 +1104,47 @@ def _update(wire, run, release, pack, servo_id, allow_id_change, on_progress):
         raise InstallError(f'ID {servo_id} is not at a confirmed 1 Mbaud (baud word {word}). Nothing was installed',
                            step='identify')
     before = parse_devcfg(wire.read(servo_id, *DEVBLOCK))
-    nv_id = decode_busdiag(wire.read(servo_id, *BUSDIAG))['nv_id']
+    diag = decode_busdiag(wire.read(servo_id, *BUSDIAG))
+    nv_id = diag['nv_id']
     if not 0 <= nv_id <= 252:
         raise InstallError(f'ID {servo_id} reports an invalid NV journal ID {nv_id}. Check its firmware and '
                            f'nonvolatile settings before updating. Nothing was installed', step='identify')
     run.receipt['device_block_before'] = before
-    run.step('device_block', on_servo=before, nv_id=nv_id)
-    if nv_id != servo_id and not allow_id_change:
+    log = _id_log(wire, servo_id) if diag['abi'] >= 5 else None     # 1144 exists from ABI 5 (fast17) only
+    logged = log is not None and log['source'] == 'log'
+    keep_logged = logged and release.set_id          # its manifest: the image has the ID log
+    run.step('device_block', on_servo=before, nv_id=nv_id, id_log=log)
+    if logged and not keep_logged and not allow_id_change:
+        raise InstallError(f'ID {servo_id} has that ID from set-id (its ID log), but {release.name} has no ID log '
+                           f'(release 17 and later have one), so after this update the servo would answer at its '
+                           f'stock ID {nv_id}. Either keep the firmware this servo runs now, or accept the move to ID '
+                           f'{nv_id} with allow_id_change=True (CLI: --allow-id-change). Nothing was installed',
+                           step='identify')
+    if nv_id != servo_id and not allow_id_change and not logged:
         raise InstallError(f'ID {servo_id} has that ID from its device block (written by an earlier install), but its '
                            f'stock ID (NV journal) is {nv_id}. The bundled image has no device block of its own, so '
-                           f'after this update the servo would answer at ID {nv_id}. This version of openxl330 cannot '
-                           f'change IDs, and Dynamixel Wizard cannot change the ID of a servo running this firmware. '
+                           f'after this update the servo would answer at ID {nv_id}. openxl330 changes IDs only on '
+                           f'release 17 and later (set-id), and Dynamixel Wizard cannot change the ID of a servo '
+                           f'running this firmware. '
                            f'Either keep the firmware this servo runs now (it works), or accept the move to ID '
                            f'{nv_id} with allow_id_change=True (CLI: --allow-id-change). Nothing was installed',
                            step='identify')
     target = nv_id                                       # the ID it answers at after the install
     if target != servo_id:
         run.servo_id = target                            # the verification and any recovery command use it
-        run.receipt.update(previous_id=servo_id)
+        if not keep_logged:
+            run.receipt.update(previous_id=servo_id)
     run.at = 'census_other_bauds'
     censuses = _census_bauds(wire, [b for b in CENSUS_BAUDS if b != APP_BAUD], APP_BAUD)
     run.step('census_other_bauds', censuses=censuses)
     taken = _judge_other_bauds(censuses)
     if target != servo_id and target in others:
         taken.setdefault(target, []).insert(0, APP_BAUD)
+    if target in taken and logged:
+        raise InstallError(f'ID {target} is also used by another servo on this bus (at {_bauds(taken[target])}). During '
+                           f'the update this servo answers at its stock ID {target} (its ID {servo_id} comes from '
+                           f'set-id), so the two would collide: update this servo alone, or disconnect ID {target} '
+                           f'first. Nothing was installed', step='census_other_bauds')
     if target in taken:
         which = (f'ID {target} (the stock ID this servo would answer at after the update) is already used'
                  if target != servo_id else f'ID {servo_id} is also used')
@@ -1080,14 +1165,20 @@ def _update(wire, run, release, pack, servo_id, allow_id_change, on_progress):
     run.receipt.update(servo_id=target, **_program_fields(release, pack))
     run.at = 'enter_loader'
     _upload(wire, run, lambda: wire.enter_loader(servo_id), pack, on_progress)
+    if keep_logged:                                      # the log survives only if the loader kept its page
+        target = _booted_at(wire, [nv_id, servo_id])
+        run.servo_id = target
+        run.receipt['servo_id'] = target
     seen = _verify_installed(wire, run, pack, target, release, loader_before, nvm_before)
     loader, how = seen['loader'], seen['how']
+    if keep_logged and target != servo_id:
+        target = _reapply_id(wire, run, target, servo_id)
     _verified(wire, run, target, release, seen)
     run.at = 'census_after'
     after = wire.scan(252)
     run.step('census_after', census=after)
     expected = {i: (p['model'], p['firmware']) for i, p in others.items()}
-    expected[target] = (SUPPORTED_MODEL, release.version)
+    expected[target] = (release.model, release.version)
     confirmed = {i: (p['model'], p['firmware']) for i, p in after.items() if not p.get('error')}
     changed = sorted(i for i in expected.keys() | after.keys() if i not in expected or confirmed.get(i) != expected[i])
     if changed:
@@ -1100,6 +1191,225 @@ def _update(wire, run, release, pack, servo_id, allow_id_change, on_progress):
 
 
 # ---------------------------------------------------------------- public: recover a servo left in the loader
+# ---------------------------------------------------------------- set ID (fast17+, register 1144)
+def _id_log(wire, servo_id):
+    """Read 1144 (decode_id_log), or None on an image without the ID log (before fast17)."""
+    try:
+        return decode_id_log(wire.read(servo_id, *SET_ID))
+    except Rejected:
+        return None
+
+
+def _booted_at(wire, ids, attempts=20, gap=0.05):
+    """After F8: the first of `ids` that answers (the firmware needs a moment before it does)."""
+    for _ in range(attempts):
+        for servo_id in ids:
+            try:
+                wire.ping(servo_id)
+                return servo_id
+            except NoReply:
+                pass
+        wire.sleep(gap)
+    scan = scan_command(wire)
+    raise InstallError(f'no reply at ID {" or ".join(map(str, ids))} after the launch. Find the servo with "{scan}", '
+                       f'then re-install it with "openxl330 update --port {_port_name(wire)} --id <that ID>".',
+                       step='verify', recovery=scan)
+
+
+def _write_id(wire, run, servo_id, new_id, step, logged_before=False):
+    """Write 1144 and prove the result: the servo answers at new_id with it logged, and no longer at servo_id."""
+    run.at = step
+    run.receipt['write_sent'] = True
+    try:
+        wire.write(servo_id, SET_ID[0], encode_set_id(new_id), timeout=SET_ID_REPLY_S)
+    except Rejected as e:
+        if e.error == 7:                                 # the erase/format path can fail after erasing the log
+            _after_refused_write(wire, run, servo_id, step, logged_before, e)
+        raise
+    except (NoReply, BusUncertain) as e:
+        scan = scan_command(wire)
+        reset = (' The bus state is uncertain: reopen the port (or call bus.reset()) first.' if wire.uncertain else '')
+        raise InstallError(f'no clean reply to the ID change sent to ID {servo_id} ({type(e).__name__}): the servo may '
+                           f'now answer at ID {new_id}, or still at ID {servo_id} if it did not store the change. Find '
+                           f'it with "{scan}" and check it before sending anything else.{reset}', step=step,
+                           recovery=scan) from e
+    run.servo_id = new_id
+    wire.sleep(SET_ID_QUIET_S)
+    log = _id_log(wire, new_id)
+    if log is None or log['source'] != 'log' or log['log_id'] != new_id:
+        raise _unexpected(f'ID {new_id} reports ID log {log} after the change to ID {new_id}', step)
+    diag = decode_busdiag(wire.read(new_id, *BUSDIAG))
+    if diag['id'] != new_id:
+        raise _unexpected(f'ID {new_id} reports effective ID {diag["id"]} in its bus diagnostics', step)
+    try:
+        wire.ping(servo_id)
+    except NoReply:
+        return log
+    raise InstallError(f'ID {servo_id} still answers after its ID changed to {new_id}: two servos share ID '
+                       f'{servo_id}, or the change did not take. Check the bus with "{scan_command(wire)}"', step=step,
+                       recovery=scan_command(wire))
+
+
+def _after_refused_write(wire, run, servo_id, step, logged_before, error):
+    """A 7 from 1144: read the log again (receipt id_log_after_error). If the servo's ID came from the log and the log
+    is now empty, it answers at its device-block or stock ID after the next reset: say which (warning, InstallError)."""
+    try:
+        after = _id_log(wire, servo_id)
+    except (NoReply, BusUncertain):
+        after = None
+    run.receipt['id_log_after_error'] = after
+    if not (logged_before and after is not None and after['source'] != 'log'):
+        return
+    block = parse_devcfg(wire.read(servo_id, *DEVBLOCK))
+    fallback = block['id'] if block['state'] == 'override' else decode_busdiag(wire.read(servo_id, *BUSDIAG))['nv_id']
+    warning = (f'ID {servo_id} erased its ID log but did not store the new record (error 7): after the next power '
+               f'cycle it answers at ID {fallback}')
+    run.receipt['warnings'].append(warning)
+    raise InstallError(f'{warning}. Run set-id again now, while it still answers at ID {servo_id}, or find it at ID '
+                       f'{fallback} after a power cycle', step=step) from error
+
+
+def _reapply_id(wire, run, at, servo_id):
+    """update(): the install erased the ID log, so the servo answers at its device-block / NV ID `at`: log `servo_id`
+    again. Returns servo_id."""
+    log = _write_id(wire, run, at, servo_id, 'reapply_id')
+    run.receipt.update(servo_id=servo_id)
+    run.step('id_reapplied', from_id=at, id_log=log)
+    return servo_id
+
+
+def finished_set_id(wire, *, servo_id: int, new_id: int, records: Path | None = None) -> dict | None:
+    """After a set-id run that sent its write but did not finish (a lost reply): that run's receipt when the change
+    did happen on the same servo, else None. Proof: the newest set-id run from servo_id to new_id under the records
+    sent its write and did not complete; servo_id is silent; the servo at new_id has new_id logged and the same
+    calibration fingerprint as that run's. Reads only."""
+    _check_id(servo_id, 'servo_id')
+    _check_id(new_id, 'new_id')
+    root = _path(records, 'records') if records is not None else records_root()
+    name = f'set-id-id{servo_id}'
+    for path in sorted((root / '_runs').glob('*/receipt.json'), key=lambda p: p.parent.name, reverse=True):
+        try:
+            receipt = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(receipt, dict) or receipt.get('run') != name or receipt.get('new_id') != new_id:
+            continue
+        if not receipt.get('write_sent') or receipt.get('completed') or not receipt.get('fingerprint'):
+            return None
+        try:
+            wire.ping(servo_id)
+            return None                                   # the old ID still answers: the change did not happen
+        except NoReply:
+            pass
+        log = _id_log(wire, new_id)
+        if log is None or log['source'] != 'log' or log['log_id'] != new_id:
+            return None
+        nvm = wire.flash_read(new_id, NVM_ADDR, CALIBRATION_BYTES)
+        return receipt if _sha256(nvm)[:16] == receipt['fingerprint'] else None
+    return None
+
+
+def set_id(wire, *, servo_id: int, new_id: int, records: Path | None = None) -> dict:
+    """Change the ID of a servo running openxl330 release 17 or later, over the bus (register 1144), and return the
+    receipt. The servo stores the new ID in its ID log (in the program flash, never the loader or its NV journal) and
+    answers at it from then on, after power cycles too. A reinstall may erase the log: update() puts the ID back.
+
+    Read-only checks first, nothing sent before they pass: new_id must differ and be 0..252 (InvalidArgument), the
+    servo must run release 17+ (NotSupported, with the update command), be OFF (Refused) and new_id must be free at
+    this baud (Refused, naming what answers there). Then a recorded run (run name set-id-id<old>, in records_root()
+    unless `records`): the calibration page is read for the servo's records folder, 1144 is written (the receipt's
+    write_sent is set first), and the result is proven: the servo answers at new_id with it logged and no longer at
+    the old ID. A lost reply raises InstallError naming both IDs and the scan command. The receipt has servo_id (the
+    new ID), previous_id, id_log_before and id_log_after; the servo's history.jsonl gets a line with the new ID."""
+    _check_id(servo_id, 'servo_id')
+    _check_id(new_id, 'new_id')
+    if new_id == servo_id:
+        raise InvalidArgument(f'new_id {new_id}: ID {servo_id} already has that ID (nothing was sent)')
+    _bus_clean(wire)
+    before = _set_id_preflight(wire, servo_id, new_id)
+    run = _start(records, f'set-id-id{servo_id}', servo_id)
+    run.receipt.update(servo_id=servo_id, new_id=new_id, baud=wire.port.baudrate, write_sent=False,
+                       release_id=before['release_id'], id_log_before=before['log'])
+    return _execute(wire, run, lambda: _set_id(wire, run, servo_id, new_id))
+
+
+def _set_id_preflight(wire, servo_id, new_id):
+    try:
+        ident = wire.ping(servo_id)
+    except NoReply:
+        raise NoReply(f'no servo answers at ID {servo_id} ({wire.port.baudrate} baud): check its ID, power and wiring. '
+                      f'Nothing was sent', missing=[servo_id]) from None
+    if ident['firmware'] != FW231 or wire.read(servo_id, *MARKER).rstrip(b'\0') != FW231_MARKER:
+        raise UnsupportedServo(f'ID {servo_id} does not run openxl330 firmware (firmware {ident["firmware"]}): set '
+                               f'the ID of a stock servo in Dynamixel Wizard. Nothing was sent')
+    try:
+        rid = decode_release_id(wire.read(servo_id, *RELEASE_ID))
+    except Rejected:
+        rid = None
+    if rid is not None and decode_busdiag(wire.read(servo_id, *BUSDIAG))['abi'] != rid['abi']:
+        rid = None
+    log = _id_log(wire, servo_id) if rid and rid['number'] >= 17 and rid['abi'] >= 5 else None
+    if log is None:                                       # older, or a logging build (no room for the ID log)
+        what = (f'release {rid["number"]} ({rid["variant"]})' if rid else 'an openxl330 release older than 12')
+        raise NotSupported(f'ID {servo_id} runs {what}, which cannot change its ID over the bus (the release 17 '
+                           f'performance images can): update it with `{update_command(wire, servo_id)}`. Nothing '
+                           f'was sent')
+    if decode_status(wire.read(servo_id, *STATUS))['enabled']:
+        raise Refused(f'ID {servo_id} is enabled, and its ID changes only while it is OFF: call disable() first. '
+                      f'Nothing was sent')
+    try:
+        other = wire.ping(new_id)
+    except NoReply:
+        other = None
+    except Rejected as e:
+        other = dict(model='?', firmware='?', error=e.error)
+    if other is not None:
+        raise Refused(f'ID {new_id} is already used by another servo on this bus (model {other["model"]}, firmware '
+                      f'{other["firmware"]}): choose a free ID, or move that servo first. Nothing was sent')
+    elsewhere = _answers_at_other_bauds(wire, new_id)
+    if elsewhere:
+        where = ' and '.join(f'{b // 1_000_000} Mbaud' for b in elsewhere)
+        raise Refused(f'ID {new_id} is already used by another servo at {where}: openxl330 servos start at 1 Mbaud '
+                      f'after a power cycle, so the two would then share ID {new_id}. Choose a free ID, or move that '
+                      f'servo first. Nothing was written')
+    return dict(release_id=dict(rid, source_id=f'{rid["source_id"]:08x}'), log=log)
+
+
+def _answers_at_other_bauds(wire, servo_id):
+    """The application bauds (1, 2, 3 Mbaud) other than the host's where `servo_id` answers a unicast ping. The host
+    goes back to its baud afterwards (unless the Wire latched)."""
+    here, found = wire.port.baudrate, []
+    try:
+        for baud in (b for b in (APP_BAUD, 2_000_000, 3_000_000) if b != here):
+            wire.set_baud(baud)
+            try:
+                wire.ping(servo_id)
+                found.append(baud)
+            except NoReply:
+                pass
+            except Rejected:
+                found.append(baud)
+    finally:
+        if not wire.uncertain:
+            wire.set_baud(here)
+    return found
+
+
+def _set_id(wire, run, servo_id, new_id):
+    run.at = 'backup'
+    nvm = wire.flash_read(servo_id, NVM_ADDR, NVM_BYTES)
+    _servo_folder(run, nvm)
+    run.step('identified', nvm_sha256=_sha256(nvm), id_log=run.receipt['id_log_before'])
+    log = _write_id(wire, run, servo_id, new_id, 'set_id',
+                    logged_before=run.receipt['id_log_before']['source'] == 'log')
+    rid = decode_release_id(wire.read(new_id, *RELEASE_ID))
+    if dict(rid, source_id=f'{rid["source_id"]:08x}') != run.receipt['release_id']:
+        raise _unexpected(f'ID {new_id} reports release ID {rid}, not the one ID {servo_id} reported before', 'set_id')
+    run.receipt.update(completed=True, servo_id=new_id, previous_id=servo_id, id_log_after=log)
+    run.step('id_changed', previous_id=servo_id, new_id=new_id, id_log=log)
+    return run.receipt
+
+
 def _failed_run(servo_id, receipt, root):
     """The receipt path and data for the failed run, or two None values. `receipt` (a receipt.json or its run folder;
     a relative path that does not exist is also tried inside the records folder, as receipts store it) must be from a
@@ -1136,7 +1446,7 @@ def _failed_run(servo_id, receipt, root):
     return path, r
 
 
-def recover(wire, *, servo_id: int, receipt: Path | None = None, release: str | Release = DEFAULT_RELEASE,
+def recover(wire, *, servo_id: int, receipt: Path | None = None, release: str | Release | None = None,
             records: Path | None = None, loader_fresh: bool = False, on_progress=None) -> dict:
     """Finish an install on the one servo left in the retained loader (failed FA check, interrupted upload, a servo
     that came up in the loader). Exactly one servo may be in the loader. Returns the receipt.
@@ -1154,23 +1464,37 @@ def recover(wire, *, servo_id: int, receipt: Path | None = None, release: str | 
     matches, and its loader history; otherwise the servo is installed but its receipt says the preservation is
     unverified. When nothing answers the loader, the advice says what to run instead (`--loader-fresh` if the servo was
     power-cycled since the failed install, else a scan at every baud). on_progress(done_bytes, total_bytes) after every
-    upload packet."""
+    upload packet. The image: `release` when given, else the failed run's release when it is bundled, else the
+    default (fw231-comp2-fast17)."""
     _check_id(servo_id, 'servo_id')
     _check_bool(loader_fresh, 'loader_fresh')
     _check_progress(on_progress)
-    release = _release(release)
-    pack = release.packaged()
     root = _path(records, 'records') if records is not None else records_root()
     failed, failed_receipt = _failed_run(servo_id, receipt, root)
+    if release is None:
+        named = (failed_receipt or {}).get('release')
+        release = named if named in images.RELEASES else DEFAULT_RELEASE
+    release = _release(release)
+    pack = release.packaged()
     run = _start(records, f'recover-id{servo_id}', servo_id, recovering=True)
     run.loader_fresh = loader_fresh
     fingerprint = (failed_receipt.get('expected_fingerprint', failed_receipt.get('fingerprint'))
                    if failed_receipt else None)
+    logged = _logged_id_of(failed_receipt)
     return _execute(wire, run, lambda: _recover(wire, run, release, pack, servo_id, failed, fingerprint, loader_fresh,
-                                                on_progress))
+                                                on_progress, logged))
 
 
-def _recover(wire, run, release, pack, servo_id, failed, fingerprint, loader_fresh, on_progress):
+def _logged_id_of(receipt):
+    """The set-id ID the failed update's servo had (its device_block step's ID log), or None."""
+    for step in (receipt or {}).get('steps', ()):
+        log = step.get('id_log') if isinstance(step, dict) and step.get('step') == 'device_block' else None
+        if isinstance(log, dict) and log.get('source') == 'log' and type(log.get('log_id')) is int:
+            return log['log_id']
+    return None
+
+
+def _recover(wire, run, release, pack, servo_id, failed, fingerprint, loader_fresh, on_progress, logged=None):
     run.at = 'attach'
     run.receipt.update(servo_id=servo_id, **_program_fields(release, pack),
                        failed_run=run.records.relative(failed) if failed else None)
@@ -1186,8 +1510,22 @@ def _recover(wire, run, release, pack, servo_id, failed, fingerprint, loader_fre
         run.step('loader_attached', loader_fresh=loader_fresh)
         return loader
     _upload(wire, run, attach, pack, on_progress)
-    seen = _verify_installed(wire, run, pack, servo_id, release)
+    target = servo_id
+    if logged is not None and logged != servo_id:        # its ID came from set-id: the log may have survived
+        target = _booted_at(wire, [servo_id, logged])
+        run.servo_id = target
+        run.receipt['servo_id'] = target
+    seen = _verify_installed(wire, run, pack, target, release)
     loader, how, nvm = seen['loader'], seen['how'], seen['nvm']
+    if logged is not None and target != logged:
+        if release.set_id:
+            target = _reapply_id(wire, run, target, logged)
+        else:
+            run.receipt['logged_id_lost'] = logged
+            run.receipt['warnings'].append(
+                f'ID {logged} (given by set-id) was lost: {release.name} has no ID log, so the servo now answers at '
+                f'its stock ID {target}. Give it its ID back with set-id after installing a release that has an ID '
+                f'log (release 17 and later)')
     run.at = 'records'
     actual_fingerprint = _sha256(nvm[:4096])[:16]
     if fingerprint is not None and fingerprint != actual_fingerprint:
@@ -1206,11 +1544,12 @@ def _recover(wire, run, release, pack, servo_id, failed, fingerprint, loader_fre
     run.receipt.update(known_servo=known, kept=dict(kept, **{'loader.crc32': 'appended'}),
                        preservation="verified against this servo's records" if known else
                        'unverified: no earlier records for this servo')
-    _verified(wire, run, servo_id, release, seen)
+    _verified(wire, run, target, release, seen)
     run.receipt['completed'] = known
     _conclude(run, loader, how)
     return run.receipt
 
 
 __all__ = ['PROVEN_LOADERS', 'PROVEN_STOCK', 'SCHEMA', 'SUPPORTED_MODEL', 'from_stock', 'loader_crc32', 'recover',
+           'set_id', 'finished_set_id',
            'records_root', 'recovery_command', 'scan_command', 'update', 'update_command']

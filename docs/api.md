@@ -8,7 +8,7 @@
 | `Bus.simulated(n=3, calibration=None)` | In-memory bus with IDs 1 through `n`. |
 | `Bus.ports()` | Available serial device names. |
 | `bus.scan(all_bauds=False)` | A list of `ServoInfo` records. `all_bauds=True` also probes the other common rates and restores the host rate. |
-| `bus.servo_info(id)` | Identity, baud and supported features, including identity for unsupported firmware without decoding its telemetry. |
+| `bus.servo_info(id)` | Identity, baud and supported features (`set_id` on release 17+), including identity for unsupported firmware without decoding its telemetry. `beta` is `True` for a beta model; see [servo models](models.md). |
 | `bus.servo(id)` / `bus.group(ids, off_on_exit=False)` | A supported servo or an ordered group of supported servos. |
 | `bus.set_baud(bps, ids=None)` | A fleet rate change report with `baud`, `previous`, `confirmed` and `missing`. All supported source servos hear the broadcast. `ids` selects the confirmations to report. |
 
@@ -35,9 +35,10 @@ A clean missing reply raises `NoReply`. For group reads, `.partial` and `.missin
 | `servo.control_mode()` | What drives the motor now (`"position"`, `"duty"`, `"torque"` or `"raw_torque"`), the requested torque in N·m after the configured limit, the applied duty, and the controller's `saturated` (more than full duty asked for) and `limited` (the configured limit clipped the request) flags. |
 | `servo.disable()` | Turn torque OFF. A loaded joint may fall. |
 | `servo.state()` / `servo.position` | Motion state or position alone. |
-| `servo.status()` | Enabled and ready flags, named and raw fault bits, voltage, temperature, position and worst tick time. |
+| `servo.status()` | Enabled and ready flags, named and raw fault bits, warnings (release 17: `'supply_high'`, `'voltage_protection_off'`), voltage, temperature, position and worst tick time. |
 | `servo.diagnostics()` | Bus counters, release, reply timing and last reset when available. Use `reply_timing()` or `last_reset()` for one item. |
 | `servo.led = True` / `servo.clear_faults()` / `servo.reboot()` | Set the LED, clear faults while torque is OFF, or restart the application with torque OFF. |
+| `servo.set_id(new_id, *, records=None)` | Change the servo's ID over the bus (release 17+), and return a `Servo` for the new ID. See [changing an ID](#changing-an-id). |
 
 `servo.reboot()` verifies that the application returns. On a faster bus it checks that the servo’s ID is free at 1 Mbaud before rebooting, since that is where the servo initially comes up.
 
@@ -49,7 +50,7 @@ The bundled image loads gear-train compensation at every boot, and `configure()`
 - **viscous loss and back-EMF:** about 0.021 N·m·s/rad, reduced at high duty;
 - **rotor inertia:** feedforward from the planned acceleration, plus feedback that switches off below 0.3 rad/s.
 
-Registers 324, 336 and 340 hold these settings ([register map](registers.md)).
+The image loads these settings at power-up, and register 324 reads them back ([register map](registers.md)).
 
 `State` reports calibrated position (rad), velocity (rad/s), estimated `torque_motor` and `torque_out` (N·m), current (A) and duty (fraction). `State.raw` retains fields in firmware units and uses the hardware coordinate direction. [Torque estimation guidance](torque.md)
 
@@ -59,7 +60,7 @@ The firmware turns torque OFF and latches a fault for three protections. The onl
 
 | Condition | Default | Fault name |
 | --- | --- | --- |
-| Supply voltage below 3.5 V or above the upper limit | upper limit 7.0 V | `voltage` |
+| Supply voltage below 3.5 V or above the upper limit | upper limit 8.0 V (also its maximum) | `voltage` |
 | Temperature at or above the limit | 65 °C | `temperature` |
 | Current overload: RMS current above the limit (I²t, first-order filter with a time constant of about 2 s, so short bursts do not trip) | 1.0 A | `current` |
 
@@ -75,6 +76,21 @@ with Bus.simulated(1) as bus:
 ```
 
 A 12-byte write to 848 (the first three words) changes the limits until the next boot. It is accepted only while torque is OFF. The lower voltage limit of 3.5 V is fixed. A tripped protection shows in `status()` faults; see [troubleshooting](troubleshooting.md#fault-names).
+
+### Upper-voltage protection switch (release 17)
+
+The upper limit can be set up to 8.0 V, and that is also its default. While the supply is above 7.0 V the servo also raises a warning. The warning is not a fault: torque stays on and nothing latches. It appears in `status().warnings` as `'supply_high'`, and clears once the supply is back at or below 6.8 V.
+
+One switch turns off both the warning and the upper-voltage trip:
+
+```python
+servo.voltage_protection = False           # no upper trip, no warning; status().warnings shows 'voltage_protection_off'
+group.set_voltage_protection(True)         # back on (also after every boot)
+```
+
+- **What stays on:** the 3.5 V lower limit, temperature and current protections.
+- **When it applies:** it can be set at any time, also while torque is on, and it is back on after every boot. Raw access is register 1152 (1 byte: 1 on, 0 off).
+- **Hardware rating:** ROBOTIS rates the XL330 to about 6 V, and openxl330 has no duty cap. Above that, the motor sees the full supply at full duty.
 
 After a current trip, wait about 2 s, or reduce the load, before arming again. Clearing the fault does not reset the I²t filter, which decays with its own time constant of about 2 s. A servo armed straight away under the same load trips again almost at once.
 
@@ -138,11 +154,32 @@ with Bus.simulated(3) as bus:
 
 `servo.calibrate` accepts `zero="here"` or a count. A direction of `-1` reverses the sign of position changes and the motion quantities reported by the host. Omit fields you want to keep. For a group, use `group.calibrate(zeros="here", directions={1: -1})` or pass a dictionary of individual zero values.
 
+`Calibration.move(old, new)` moves an entry after an ID change; `Servo.set_id` does it for you.
+
 A physical `Bus` reads `~/.openxl330/calibration.json` by default, or uses the directory from `OPENXL330_HOME`. Pass a path or a `Calibration` instance explicitly for separate host profiles. The simulated bus uses in-memory calibration by default. Joint calibration never writes the servo’s own calibration region.
+
+## Changing an ID
+
+Servos running an openxl330 release 17 performance image can change their ID over the bus (the logging images have no room for the ID log). The servo keeps the new ID in its own ID log, so it survives power cycles. The loader and the servo's calibration are never written.
+
+```python
+new = bus.servo(2).set_id(6)    # the servo must be OFF, and ID 6 free on the bus
+```
+
+- **Checks first.** Nothing is sent until these pass:
+  - the servo runs release 17+ (`NotSupported`, with the `update` command);
+  - it is OFF (`Refused`);
+  - the new ID is 0..252 and differs (`InvalidArgument`);
+  - no servo answers at the new ID (`Refused`, naming it);
+  - the host calibration has no entry for the new ID (`Refused`: reset it first).
+- **Recorded run.** The change is recorded like an install: a receipt and a history line under the records folder. `openxl330.install.set_id(wire, servo_id=..., new_id=...)` is the same run without the host calibration step.
+- **Calibration and handles.** The host calibration entry moves to the new ID. Every `Servo` or `Group` handle made before the change, for either ID, refuses further use: get new handles.
+- **Lost reply.** If the reply is lost, the error names both IDs and the scan command. The servo answers at one of them. `install.finished_set_id(wire, servo_id=OLD, new_id=NEW)` returns the failed run's receipt when the servo now at NEW is provably the same servo (old ID silent, NEW logged, same calibration fingerprint); then `bus.calibration.move(OLD, NEW)` finishes the host side. The CLI's re-run does both.
+- **Updates.** A reinstall may erase the ID log. `install.update()` puts the ID back when the new release has an ID log. A release without one is refused unless `allow_id_change=True`, because the servo would move to its stock ID.
 
 ## Installer, raw protocol and diagnostics
 
-Use `install.from_stock(bus.wire, stock_id=..., stock_baud=...)`, `install.update(bus.wire, servo_id=...)` and `install.recover(bus.wire, servo_id=...)` as the Python counterparts to the CLI. A Python caller opening a connection to a retained loader should use 57,600 baud and `check_adapter=False` to avoid the application probe. While a servo may be in the loader, the `Wire` refuses every request other than the loader session's, and `Wire.flash_read` never reads the loader region 0x08000000..0x08003FFF. Follow the instructions in the install error or receipt for choosing the recovery options. [Firmware installation](install.md)
+Use `install.from_stock(bus.wire, stock_id=..., stock_baud=...)`, `install.update(bus.wire, servo_id=...)`, `install.recover(bus.wire, servo_id=...)` and `install.set_id(bus.wire, servo_id=..., new_id=...)` as the Python counterparts to the CLI. `from_stock` and `update` take `allow_beta=True` for a beta model (the XL330-M077); see [servo models](models.md). A Python caller opening a connection to a retained loader should use 57,600 baud and `check_adapter=False` to avoid the application probe. While a servo may be in the loader, the `Wire` refuses every request other than the loader session's, and `Wire.flash_read` never reads the loader region 0x08000000..0x08003FFF. Follow the instructions in the install error or receipt for choosing the recovery options. [Firmware installation](install.md)
 
 `Bus` also exposes `ping`, `read`, `write`, `sync_read`, `fast_sync_read`, `sync_write`, `bulk_read` and `reboot`. Use the openxl330 [register map](registers.md) for raw access. A Protocol 2.0 client such as the optional DYNAMIXEL SDK can use the same packet framing with the openxl330 register map. For that client, run `python -m pip install dynamixel-sdk` separately. Use one client on a port at a time. [DYNAMIXEL SDK Python source](https://github.com/ROBOTIS-GIT/DynamixelSDK/tree/master/python)
 

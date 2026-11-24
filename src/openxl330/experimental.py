@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from . import install
+from . import images, install
 from .errors import BusUncertain, InstallError, InvalidArgument, UnsupportedServo
 from .images import DEFAULT_RELEASE, Release
 from .registers import BUSDIAG, DEVBLOCK, FW231_MARKER, MARKER, STATUS, TORQUE_ENABLE, decode_busdiag, decode_status, \
@@ -155,8 +155,8 @@ def _stopped(e, servo_id, done, rest):
 
 
 # ---------------------------------------------------------------- flash-all
-def flash_all(wire, *, confirm, release: str | Release = DEFAULT_RELEASE, allow_untested: bool = False,
-              records: Path | None = None, on_progress=None) -> dict:
+def flash_all(wire, *, confirm, release: str | Release | None = None, allow_untested: bool = False,
+              records: Path | None = None, on_progress=None, variant: str | None = None) -> dict:
     """EXPERIMENTAL. Install the bundled firmware on every stock XL330-M288 on the bus, one at a time in ID order;
     each keeps its ID and starts at 1 Mbaud. Servos already on FW231 are skipped.
 
@@ -177,7 +177,9 @@ def flash_all(wire, *, confirm, release: str | Release = DEFAULT_RELEASE, allow_
         raise InvalidArgument('confirm must be a callable(plan) -> bool (nothing was sent)')
     install._check_bool(allow_untested, 'allow_untested')
     install._check_progress(on_progress)
-    release = install._release(release)
+    install._check_variant(variant, release)
+    release = install._release(release if release is not None else
+                               images.release_for(install.SUPPORTED_MODEL, variant or 'performance'))
     install._bus_clean(wire)
     here = wire.port.baudrate
     the_plan = plan(_census(wire, here), allow_untested=allow_untested)

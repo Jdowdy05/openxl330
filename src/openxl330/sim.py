@@ -72,6 +72,8 @@ DUTY_PD = -2 ** 31                # write 260: back to PD
 # install sees a known loader. These are not the loader's bytes.
 SIM_LOADER = bytes((i * 7 + 3) & 0xFF for i in range(0x4000 - 4)) + bytes.fromhex('865d109e')
 _DEVCFG = slice(0x4000 + DEVCFG_OFFSET, 0x4000 + DEVCFG_OFFSET + DEVCFG_BYTES)
+ID_LOG_PAGE = 0xD800                # fast17+ ID log: the last program page 0x0800D800..0x0800DFFF
+ID_LOG_RECORDS = 255                # 2048-byte page: an 8-byte header, then 8-byte records
 _Q16_MAX = (1 << 31) - 1
 
 
@@ -175,7 +177,8 @@ class SimServo:
     STOCK_BAUDS = {0: 9600, 1: 57600, 2: 115200, 3: 1000000, 4: 2000000, 5: 3000000, 6: 4000000, 7: 4500000}
     STOCK_TABLE = 148               # stock control table bytes 0..147 (EEPROM 0..63, RAM 64..147)
 
-    def __init__(self, nv_id=1, *, mode='stock', program=None, loader=None, seed=1, eeprom=None):
+    def __init__(self, nv_id=1, *, mode='stock', program=None, loader=None, seed=1, eeprom=None, release_id=None,
+                 loader_erases_region=False):
         self.flash = bytearray(b'\xff' * 0x10000)
         self.flash[0:0x4000] = loader if loader is not None else SIM_LOADER
         calib = bytes(((i * 31 + seed * 97) ^ (i >> 3)) & 0xFF for i in range(4096))
@@ -192,6 +195,9 @@ class SimServo:
         self.uploaded = None            # (bytes written at 0x4000, the upload that wrote them): what FA can check
         self.clock = None; self.switches = self.reverts = 0
         self.version = None
+        self.release_override = dict(release_id) if release_id else None   # stands in for an unbundled release
+        self.id_log = []                # fast17+ ID log records (page 0x0800D800); lives in flash: survives resets
+        self.loader_erases_region = loader_erases_region   # an upload erases the whole region, not only its pages
         self.mode = mode
         self.reset(mode)
 
@@ -230,7 +236,8 @@ class SimServo:
             self.version = 231 if self.opaque_upload is None and FW231_MARKER in program else None
             self.mode = 'app' if self.version else 'dead'
             self.comp = self._power_up_comp()
-            self.release_id = self._release_id(program) if self.version else None
+            self.release_id = (dict(self.release_override) if self.release_override else self._release_id(program)
+                               ) if self.version else None
             self.loader_private = self.release_id is not None                   # fast12+: read 1136, no loader A0
             d = parse_devcfg(bytes(self.flash[_DEVCFG])) if self.version else {}
             self.boot_baud = d.get('boot_baud', 1000000) if d.get('state') in ('default', 'override') else 1000000
@@ -238,6 +245,9 @@ class SimServo:
             self.boot_since = self.clock.t if self.clock else 0.0
             self.baud = 1000000
             self.baud_prev, self.baud_since, self.baud_unconfirmed = 1000000, 0.0, False
+        self.vprot, self.warn_high = 1, False                                    # 1152: back on at every boot
+        if self._vprot_capable():
+            self.protect = (1000, 65, 80)                                        # 8.0 V default (fast17 rev b)
 
     COMP2 = struct.pack('<10I', 68451, 20054, 1401, 6375, 3277, 0, 0, 9040, 0x102, 0x31504d43)
 
@@ -255,9 +265,20 @@ class SimServo:
                 return rid.copy()
         return None
 
+    def _has_id_log(self):
+        """fast17+ (release 17): register 1144 and the ID log."""
+        return (self.mode == 'app' and bool(self.release_id) and self.release_id['number'] >= 17
+                and self.release_id['abi'] >= 5 and not self.release_id['variant'].endswith('-log'))   # no room in
+                                                                                                    # logging builds
+
+    def _logged_id(self):
+        return self.id_log[-1] if self._has_id_log() and self.id_log and self.id_log[-1] != 0xFF else None
+
     def effective_id(self):
         if self.mode == 'stock':
             return self.eeprom[7]
+        if self._logged_id() is not None:
+            return self._logged_id()
         if self.version == 231:
             d = parse_devcfg(bytes(self.flash[_DEVCFG]))
             if d['state'] == 'override':
@@ -308,7 +329,9 @@ class SimServo:
         e = bytearray(self.eeprom)
         if self.mode == 'stock':
             return bytes(e)
-        e[0:2] = struct.pack('<H', 1200); e[6] = self.version
+        if not (self.release_id and self.release_id['number'] >= 17):
+            e[0:2] = struct.pack('<H', 1200)                 # before fast17 PING hard-codes 1200; fast17+ the NV model
+        e[6] = self.version
         e[7] = self.effective_id(); e[8] = {1000000: 3, 2000000: 4, 3000000: 5}[self.baud]
         return bytes(e)
 
@@ -320,6 +343,28 @@ class SimServo:
         ram[80:83] = struct.pack('<HB', 51, 24)
         return self.low_table() + bytes(ram)
 
+    # ---------------------------------------------------------- the shaft and the EEPROM homing offset / reverse
+    def _home_rev(self):
+        """Stock EEPROM Homing_Offset (20..23, int32) and the Drive_Mode reverse bit (10, bit 0), which FW231's tracker
+        applies as stock firmware does (app.c: home negated under reverse, added after the direction map)."""
+        return struct.unpack_from('<i', self.eeprom, 20)[0], bool(self.eeprom[10] & 1)
+
+    def _from_shaft(self, shaft):
+        home, reverse = self._home_rev()
+        return 4096 - shaft - home if reverse else shaft + home
+
+    @property
+    def shaft(self):
+        """The physical shaft in encoder counts (reverse 0, homing offset 0). `position` is what the firmware reports
+        for it: shaft + home, or 4096 - shaft - home with reverse. Motion runs in the reported frame (with reverse the
+        firmware reverses the motor too)."""
+        home, reverse = self._home_rev()
+        return 4096 - self.position - home if reverse else self.position - home
+
+    @shaft.setter
+    def shaft(self, value):
+        self.position = float(self._from_shaft(value))
+
     def _stock_write(self, a, data):
         """Stock firmware: torque (64) and LED (65), and EEPROM 7..63 while torque is off (access error 7 while on;
         0..6 are read-only). ID 7 takes effect at once (the reply still comes from the old ID); baud 8 after the
@@ -330,7 +375,9 @@ class SimServo:
         if self.enabled: return 7
         if a <= 7 < a + len(data) and data[7 - a] > 252: return 4
         if a <= 8 < a + len(data) and data[8 - a] not in self.STOCK_BAUDS: return 4
+        shaft = self.shaft
         self.eeprom[a:a + len(data)] = data
+        self.shaft = shaft                                       # a homing / reverse write moves no shaft
         if a <= 8 < a + len(data):
             self._pending_baud = self.STOCK_BAUDS[data[8 - a]]
         return 0
@@ -338,7 +385,7 @@ class SimServo:
     def status_words(self):
         uptime = int((self.clock.t - self.boot_t) * 1e6) & 0xFFFFFFFF if self.clock else 5678
         pos = round(self.position)
-        return struct.pack('<17I', self.enabled, not self.faults, 1, 0, self.faults, 0, 1234, uptime,
+        return struct.pack('<17I', self.enabled, not self.faults, 1, self._warnings(), self.faults, 0, 1234, uptime,
                            pos & 0xFFFFFFFF, round(self.motion_v * 1000) & 0xFFFFFFFF, 210, 0, 500 << 16, 3456,
                            pos % 4096, self.supply_mv | (12 << 16), self.temperature_c)
 
@@ -390,10 +437,27 @@ class SimServo:
         self.profile = (start, float(counts), now, ticks / 2000.0, kind)
         return 0
 
+    def _vprot_capable(self):
+        """fast17 rev b: 8.0 V cap and default, register 1152, status warnings (standing in: release 17, ABI 5)."""
+        return self.mode == 'app' and bool(self.release_id) and self.release_id['number'] >= 17 \
+            and self.release_id['abi'] >= 5
+
+    def _warnings(self):
+        if not self._vprot_capable():
+            return 0
+        if not self.vprot:
+            self.warn_high = False
+            return 2
+        if self.supply_mv > 7000:
+            self.warn_high = True
+        elif self.supply_mv <= 6800:
+            self.warn_high = False
+        return 1 if self.warn_high else 0
+
     def _protection_fault(self):
         """Return the current voltage or temperature fault, in firmware priority order."""
         _, temp_c, vmax_dv = self.protect
-        if self.supply_mv > vmax_dv * 100 or self.supply_mv < 3500:
+        if (getattr(self, 'vprot', 1) and self.supply_mv > vmax_dv * 100) or self.supply_mv < 3500:
             return 8
         return 16 if self.temperature_c >= temp_c else 0
 
@@ -463,6 +527,14 @@ class SimServo:
                                  *details, 12, 0, 0x0800A1B3)
             return 0, timing[:n]
         if (a, n) == (852, 16): return 0, struct.pack('<4I', 0, 0, 0, 100 | (2000 << 16))
+        if (a, n) == (1152, 1) and self._vprot_capable():
+            return 0, bytes([self.vprot])
+        if (a, n) == (1144, 8) and self._has_id_log():                         # fast17+ ID log
+            override = parse_devcfg(bytes(self.flash[_DEVCFG]))['state'] == 'override'
+            source = 2 if self._logged_id() is not None else 1 if override else 0
+            logged = self._logged_id()
+            return 0, struct.pack('<BBHHH', 0xFF if logged is None else logged, source, len(self.id_log),
+                                  ID_LOG_RECORDS - len(self.id_log), 0)
         if (a, n) == (1120, 16) and self.release_id:                           # fast12+ release ID
             return 0, encode_release_id(**self.release_id)
         if (a, n) == (1136, 8) and self.loader_private:                         # fast12+: the loader's CRC-32 only
@@ -525,6 +597,18 @@ class SimServo:
             ms, act, magic = struct.unpack('<III', data)
             if magic != 0x5341454C or ms > 60000 or act > 1: return 4
             L.update(ms=ms, action=act, state=1 if ms else 0, last=now); return 0
+        if a == 1152 and self._vprot_capable():
+            if len(data) != 1: return 5
+            if data[0] > 1: return 4
+            self.vprot = data[0]; return 0                       # allowed while armed
+        if a == 1144 and self._has_id_log():
+            if broadcast: return 0                                   # any 0xFE-addressed 1144 is ignored
+            if len(data) != 8: return 5
+            if data[:4] != b'SID1' or data[5:] != bytes(3) or data[4] in (253, 254): return 4
+            if self.enabled: return 7
+            if len(self.id_log) >= ID_LOG_RECORDS:
+                self.id_log = []                                     # a full page is erased, then the record written
+            self.id_log.append(data[4]); return 0
         if a == 1076:
             if len(data) != 1: return 5
             if L['state'] == 1 and not broadcast: L['last'] = now
@@ -593,7 +677,8 @@ class SimServo:
             if len(data) != 12: return 5
             if self.enabled: return 7
             cur, temp, vmax = struct.unpack('<3I', data)
-            if not (cur <= 100000 and 20 <= temp <= 100 and 50 <= vmax <= 70): return 4
+            if not (cur <= 100000 and 20 <= temp <= 100 and 50 <= vmax <= (80 if self._vprot_capable() else 70)):
+                return 4
             self.protect = (cur, temp, vmax); return 0
         if a == 328:
             if len(data) != 8 or not self.configured: return 4
@@ -646,6 +731,8 @@ class SimServo:
             raise AssertionError(f'simulated loader asked to write 0x{address:x}..0x{end:x} outside the program region')
         self.flash[address:end] = data
         self.max_write = max(self.max_write or 0, end)
+        if self.loader_erases_region or end > ID_LOG_PAGE:
+            self.id_log = []                                     # the log page was erased (or programmed over)
 
     # ---------------------------------------------------------- frames
     def on_frame(self, f, clock):
@@ -724,7 +811,8 @@ class SimServo:
         if ins == 0x83:
             a, n = struct.unpack_from('<HH', p)
             for k in range(4, len(p), n + 1):
-                if p[k] == me: self.write(a, p[k + 1:k + 1 + n], False)   # a Sync Write row is addressed to this servo
+                if p[k] == me and a != 1144:                              # 1144 is ignored in any 0xFE frame
+                    self.write(a, p[k + 1:k + 1 + n], False)             # a Sync Write row is addressed to this servo
             return None
         return None
 
